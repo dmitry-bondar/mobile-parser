@@ -1,0 +1,12 @@
+node_modules/
+screenshots/
+artifacts/
+android-sdk/
+android-avd/
+outputs/
+.env
+.env.*
+!.env.example
+adb-keyboard.apk
+logs/
+.idea/

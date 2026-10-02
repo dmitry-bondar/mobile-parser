@@ -1,0 +1,23 @@
+{
+  "name": "mobile-parser",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "benchmark:pobeda": "powershell -ExecutionPolicy Bypass -File scripts/benchmark-pobeda.ps1",
+    "check": "tsc --noEmit",
+    "test": "tsx --test tests/*.test.ts",
+    "devices": "tsx src/devices.ts",
+    "android": "tsx src/start-android.ts",
+    "screenshot": "tsx src/screenshot.ts",
+    "pobeda": "tsx src/extractors/pobeda/index.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  },
+  "dependencies": {
+    "fast-xml-parser": "^5.11.2"
+  }
+}
