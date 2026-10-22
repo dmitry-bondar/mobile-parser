@@ -25,13 +25,15 @@ test('real supervisor saves failed worker and unstarted address without starting
   try {
     await mkdir(resolve(root, 'src/extractors/pobeda'), { recursive: true });
     await writeFile(resolve(root, 'config.json'), JSON.stringify([{ address: 'Тестовый адрес', categories: [] }]));
-    const { stdout, stderr, code } = await promisify(execFile)(process.execPath, ['--import', pathToFileURL(resolve('node_modules/tsx/dist/loader.mjs')).href, resolve('scripts/pobeda-parallel.ts'), 'missing-template', '1'], {
+    const { stdout, stderr, code } = await promisify(execFile)(process.execPath, ['--import', pathToFileURL(resolve('node_modules/tsx/dist/loader.mjs')).href, resolve('scripts/pobeda-parallel.ts'), 'missing-template', '1', '--gpu', 'swiftshader', '--no-vulkan'], {
       cwd: root, env: { ...process.env, POBEDA_CONFIG: resolve(root, 'config.json'), ADB_PATH: resolve(root, 'absent-adb.exe'), RUN_OUTPUT_DIR: '' }, windowsHide: true, timeout: 20000,
     }).then((result) => ({ ...result, code: 0 }), (error) => ({ stdout: error.stdout as string, stderr: error.stderr as string, code: error.code }));
     assert.equal(code, 1, stderr);
     const directory = stdout.match(/Общий статус: ([^\r\n]+)/)?.[1];
     assert.ok(directory, stderr);
     const report = JSON.parse(await readFile(resolve(directory, 'status.json'), 'utf8'));
+    assert.equal(report.gpu, 'swiftshader');
+    assert.equal(report.noVulkan, true);
     assert.equal(report.workers[0].status, 'Ошибка');
     assert.equal(report.workers[0].addresses[0].status, 'Не запущен');
     assert.ok(report.workers[0].ended);

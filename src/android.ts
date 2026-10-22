@@ -1,8 +1,10 @@
 import { spawn } from 'node:child_process';
 import { resolve } from 'node:path';
+import { appendFileSync, closeSync, mkdirSync, openSync } from 'node:fs';
 import { XMLParser } from 'fast-xml-parser';
 import { runAdb } from './adb.js';
 import { recordMetric } from './metrics.js';
+import { graphicsArguments } from './emulator-options.js';
 
 export type UiNode = { text: string; description: string; bounds: number[]; clickable: boolean; scrollable: boolean; className: string; children: UiNode[] };
 export const delay = (ms: number) => new Promise((done) => setTimeout(done, ms));
@@ -18,27 +20,55 @@ export class Android {
   }
 
   async start(avd: string) {
+    const graphics = graphicsArguments(process.env.ANDROID_EMULATOR_GPU, process.env.ANDROID_EMULATOR_NO_VULKAN === '1');
+    let launchError: Error | undefined;
+    let launchFailed = new Promise<never>(() => {});
     await runAdb(['start-server']);
     const devices = (await runAdb(['devices'])).stdout.toString();
     if (devices.includes(this.serial)) {
       const name = (await this.command('emu', 'avd', 'name')).toString().split(/\r?\n/)[0].trim();
       if (name !== avd) throw new Error(`${this.serial} занят другим AVD: ${name}`);
     } else {
-      spawn(resolve('android-sdk/emulator/emulator.exe'), ['-avd', avd, '-port', this.serial.split('-')[1], '-no-snapshot', '-gpu', 'auto', '-no-metrics'], {
-        detached: true, stdio: 'ignore', windowsHide: true,
-        env: { ...process.env, ANDROID_SDK_ROOT: resolve('android-sdk'), ANDROID_AVD_HOME: resolve('android-avd') },
-      }).unref();
+      const directory = process.env.RUN_OUTPUT_DIR || resolve('logs');
+      mkdirSync(directory, { recursive: true });
+      const log = resolve(directory, process.env.RUN_OUTPUT_DIR ? 'emulator.log' : `emulator-${this.serial}-${Date.now()}.log`);
+      const args = ['-avd', avd, '-port', this.serial.split('-')[1], '-no-snapshot', ...graphics, '-no-metrics'];
+      appendFileSync(log, `${new Date().toISOString()} Запуск: ${args.join(' ')}\n`);
+      console.log(`Журнал эмулятора: ${log}`);
+      const descriptor = openSync(log, 'a');
+      try {
+        const child = spawn(resolve('android-sdk/emulator/emulator.exe'), args, {
+          detached: true, stdio: ['ignore', descriptor, descriptor], windowsHide: true,
+          env: { ...process.env, ANDROID_SDK_ROOT: resolve('android-sdk'), ANDROID_AVD_HOME: resolve('android-avd') },
+        });
+        launchFailed = new Promise<never>((_, reject) => {
+          child.once('error', (error) => {
+            launchError = new Error(`Не удалось запустить эмулятор: ${error.message}. Журнал: ${log}`);
+            appendFileSync(log, `${launchError.message}\n`);
+            reject(launchError);
+          });
+          child.once('exit', (code, signal) => {
+            launchError = new Error(`Процесс эмулятора завершился: код ${code}, сигнал ${signal}. Журнал: ${log}`);
+            appendFileSync(log, `${new Date().toISOString()} ${launchError.message}\n`);
+            reject(launchError);
+          });
+        });
+        // The emulator may also exit after start() has already returned.
+        void launchFailed.catch(() => {});
+        child.unref();
+      } finally { closeSync(descriptor); }
     }
     for (let i = 0; i < 300; i++) {
       try {
-        if ((await this.command('shell', 'getprop', 'sys.boot_completed')).toString().trim() === '1') {
+        if ((await Promise.race([this.command('shell', 'getprop', 'sys.boot_completed'), launchFailed])).toString().trim() === '1') {
           await this.command('shell', 'settings', 'put', 'secure', 'show_ime_with_hard_keyboard', '1');
           await this.command('shell', 'settings', 'put', 'secure', 'stylus_handwriting_enabled', '0');
+          if (launchError) throw launchError;
           recordMetric('android-ready');
           return;
         }
-      } catch {}
-      await delay(1000);
+      } catch (error) { if (launchError) throw launchError; }
+      await Promise.race([delay(1000), launchFailed]);
     }
     throw new Error('Эмулятор не загрузился');
   }

@@ -2,10 +2,17 @@ import { appendFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } fr
 import { resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { parseArgs } from 'node:util';
+import { graphicsArguments } from '../src/emulator-options.js';
 import { avdPath } from '../src/avd-template.js';
 import { finishProgress, updateProgress, type WorkerProgress } from '../src/worker-progress.js';
 
-const [template = 'android-v1', countArgument = '4'] = process.argv.slice(2);
+const { positionals, values } = parseArgs({ allowPositionals: true, options: { gpu: { type: 'string' }, 'no-vulkan': { type: 'boolean' } } });
+if (positionals.length > 2) throw new Error('pobeda:parallel <template> <workers> [--gpu auto|swiftshader|host] [--no-vulkan]');
+const [template = 'android-v1', countArgument = '4'] = positionals;
+const gpu = values.gpu || process.env.ANDROID_EMULATOR_GPU || 'auto';
+const noVulkan = values['no-vulkan'] || process.env.ANDROID_EMULATOR_NO_VULKAN === '1';
+graphicsArguments(gpu, noVulkan);
 const count = Number(countArgument);
 avdPath(template);
 const configs = JSON.parse(readFileSync(process.env.POBEDA_CONFIG || 'src/extractors/pobeda/config.json', 'utf8'));
@@ -20,13 +27,14 @@ const workers: WorkerProgress[] = Array.from({ length: count }, (_, index) => ({
 }));
 
 function save() {
-  writeFileSync(resolve(directory, 'status.json.tmp'), JSON.stringify({ template, workers }, null, 2));
+  writeFileSync(resolve(directory, 'status.json.tmp'), JSON.stringify({ template, gpu, noVulkan, workers }, null, 2));
   renameSync(resolve(directory, 'status.json.tmp'), resolve(directory, 'status.json'));
 }
 
 function show() {
   if (process.stdout.isTTY) console.clear();
   console.log(`Общий статус: ${directory}`);
+  console.log(`GPU: ${gpu}; Vulkan: ${noVulkan ? 'отключён' : 'по умолчанию'}`);
   console.table(workers.map((worker) => ({
     'Поток': worker.worker, 'Статус': worker.status,
     'Адреса': `${worker.addresses.filter((item) => ['Готово', 'Частично'].includes(item.status)).length}/${worker.addresses.length}`,
@@ -50,7 +58,7 @@ try {
     completed.push(new Promise<void>((done) => {
       const child = spawn(process.execPath, ['--import', 'tsx', 'scripts/avd.ts', 'run', template, String(worker.worker), String(count)], {
         stdio: ['ignore', 'pipe', 'pipe', 'ipc'], windowsHide: true, detached: process.platform === 'win32',
-        env: { ...process.env, POBEDA_CONFIG: resolve(directory, 'config.snapshot.json') },
+        env: { ...process.env, POBEDA_CONFIG: resolve(directory, 'config.snapshot.json'), ANDROID_EMULATOR_GPU: gpu, ANDROID_EMULATOR_NO_VULKAN: noVulkan ? '1' : '0' },
       });
       let stderr = '';
       let spawnError = '';
