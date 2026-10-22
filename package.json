@@ -10,6 +10,7 @@
     "devices": "tsx src/devices.ts",
     "android": "tsx src/start-android.ts",
     "avd": "tsx scripts/avd.ts",
+    "pobeda:parallel": "tsx scripts/pobeda-parallel.ts",
     "screenshot": "tsx src/screenshot.ts",
     "pobeda": "tsx src/extractors/pobeda/index.ts"
   },

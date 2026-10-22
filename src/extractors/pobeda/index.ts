@@ -10,8 +10,10 @@ const packageId = 'ru.tkleto.app.magazinpobeda';
 const output = process.env.RUN_OUTPUT_DIR || resolve('outputs/pobeda', new Date().toISOString().replace(/[:.]/g, '-'));
 const logger = createLogger(resolve(output, 'run.log'));
 const products = new Map<string, { name: string; price: number | null; available: boolean; category: string; address: string; screenshot: string }>();
+let categoryErrors = 0;
 
 async function categoryError(path: string, error: unknown) {
+  categoryErrors++;
   logger.error(`Ошибка категории ${path}; продолжаем сбор:`, error);
   recordMetric('category-error', { path, message: error instanceof Error ? error.message : String(error) });
   process.exitCode = 1;
@@ -156,6 +158,8 @@ try {
     process.exitCode = 1;
   } else {
     for (const [index, config] of configs.entries()) {
+      const errorsBeforeStore = categoryErrors;
+      const productsBeforeStore = products.size;
       logger.info(`Магазин ${index + 1}/${configs.length}: проверка адреса ${config.address}`);
       recordMetric('store-start', { address: config.address });
       const directory = resolve(output, `store-${index + 1}`);
@@ -240,6 +244,7 @@ try {
         }
       }
       await writeFile(resolve(output, 'products.json'), JSON.stringify([...products.values()], null, 2));
+      recordMetric('store-end', { address: config.address, errors: categoryErrors - errorsBeforeStore, products: products.size - productsBeforeStore });
     }
     if (process.exitCode) await writeFile(resolve(output, 'products.partial.json'), JSON.stringify([...products.values()], null, 2));
     logger.info(`Собрано ${products.size} товаров${process.exitCode ? '; сбор завершён с ошибками категорий' : ''}. ${output}`);
@@ -247,6 +252,7 @@ try {
   }
 } catch (error) {
   logger.error(error);
+  recordMetric('fatal-error', { message: error instanceof Error ? error.message : String(error) });
   await writeFile(resolve(output, 'products.partial.json'), JSON.stringify([...products.values()], null, 2));
   process.exitCode = 1;
 } finally {

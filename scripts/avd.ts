@@ -39,6 +39,7 @@ if (mode === 'run') {
     await imageProperties(await readFile(resolve(avdPath(name), 'config.ini'), 'utf8'));
     await mkdir(directory, { recursive: true });
     await writeFile(resolve(directory, 'config.snapshot.json'), JSON.stringify(configs.filter((_: unknown, index: number) => index % workers === worker - 1), null, 2));
+    if (process.connected) process.send?.({ type: 'worker-ready', directory, runtime }, () => {});
     await copyAvd(avdPath(name), target, runtime);
     copied = true;
     await registerAvd(runtime);
@@ -46,13 +47,15 @@ if (mode === 'run') {
     launched = true;
     process.exitCode = await new Promise<number>((done, reject) => {
       const child = spawn(process.execPath, ['--import', 'tsx', 'src/extractors/pobeda/index.ts'], {
-        stdio: 'inherit', windowsHide: true,
+        stdio: ['inherit', 'inherit', 'inherit', 'ipc'], windowsHide: true,
         env: { ...process.env, ANDROID_AVD: runtime, ANDROID_SERIAL: serial, POBEDA_CONFIG: resolve(directory, 'config.snapshot.json'), RUN_OUTPUT_DIR: directory },
       });
       child.once('error', reject);
+      child.on('message', (message) => { if (process.connected) process.send?.(message, () => {}); });
       child.once('exit', (code) => done(code ?? 1));
     });
   } finally {
+    if (process.connected) process.send?.({ type: 'worker-cleanup' }, () => {});
     try {
       if (launched) {
         try {
@@ -69,7 +72,11 @@ if (mode === 'run') {
         await removeRuntime(runtime);
         console.log(`Временный AVD удалён; результаты сохранены: ${directory}`);
       }
-    } catch (error) { console.error(error); process.exitCode = 1; }
+    } catch (error) {
+      console.error(error);
+      if (process.connected) process.send?.({ type: 'worker-error', message: error instanceof Error ? error.message : String(error) }, () => {});
+      process.exitCode = 1;
+    }
     await portLock.close();
     await unlink(resolve('android-avd', `.port-${serial}.lock`));
   }
