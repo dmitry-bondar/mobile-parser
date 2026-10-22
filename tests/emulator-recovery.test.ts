@@ -45,7 +45,7 @@ test('installed ADBKeyboard does not require APK; absent keyboard reports missin
       async start() {}
       async command(...args: string[]) {
         if (args[0] === 'install') installs++;
-        if (args.includes('enable')) throw new Error('keyboard ready');
+        if (args.includes('enable')) throw new Error('ADBKeyboard ready');
         if (args.includes('list')) return Buffer.from(installed ? 'com.android.adbkeyboard/.AdbIME' : '');
         return Buffer.from(args.at(-1) === 'name' ? 'template' : '');
       }
@@ -60,9 +60,30 @@ test('installed ADBKeyboard does not require APK; absent keyboard reports missin
     }, false, true);
     assert.equal(installs, 0);
     assert.equal(result.apkChecks, installed ? 0 : 1);
-    assert.match(result.metrics.find((event) => event.type === 'fatal-error').message, installed ? /keyboard ready/ : /отсутствует adb-keyboard.apk/);
+    assert.match(result.metrics.find((event) => event.type === 'fatal-error').message, installed ? /ADBKeyboard ready/ : /отсутствует adb-keyboard.apk/);
     assert.ok(!result.metrics.some((event) => event.type === 'emulator-restart'));
   }
+});
+
+test('three store selection failures skip only that address and the next one is collected', async () => {
+  let homes = 0;
+  const result = await run(class {
+    serial = 'emulator-5554';
+    async start() {}
+    async command(...args: string[]) { return Buffer.from(args.at(-1) === 'name' ? 'template' : ''); }
+    async click() { homes++; }
+    flatten(nodes: any[]) { return nodes; }
+    async wait(_: unknown, message: string) {
+      if (message === 'Приложение не загрузилось') return [{ text: 'Главная' }];
+      if (homes <= 3) throw new Error('Выбранный магазин не подтверждён на главной');
+      return [{ text: 'Рязань, Спортивная,1', bounds: [0, 100, 100, 200] }];
+    }
+  });
+  assert.equal(homes, 4);
+  assert.equal(result.code, 1);
+  assert.equal(result.metrics.filter((event) => event.type === 'store-error').length, 1);
+  assert.deepEqual(result.metrics.filter((event) => event.type === 'store-end').map((event) => event.address), ['Рязань, Спортивная,1']);
+  assert.ok(!result.metrics.some((event) => event.type === 'fatal-error'));
 });
 
 test('missing files and explicit stop do not cause emulator restart', async () => {

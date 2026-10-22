@@ -168,9 +168,12 @@ try {
     const errorsBeforeStore = categoryErrors;
     const productsBeforeStore = products.size;
     let attempt = 0;
+    let selectionFailures = 0;
     for (;;) {
+      let selecting = false;
       try {
         if (needsLaunch) { await openApp(); needsLaunch = false; }
+        selecting = true;
         logger.info(`Магазин ${index + 1}/${configs.length}: проверка адреса ${config.address}`);
         recordMetric('store-start', { address: config.address });
         const directory = resolve(output, `store-${index + 1}`, ...(attempt ? [`attempt-${attempt + 1}`] : []));
@@ -244,6 +247,7 @@ try {
         }
         logger.info(`Магазин: ${selectedAddress}`);
         recordMetric('store-selected', { address: selectedAddress });
+        selecting = false;
         for (const path of config.categories) {
           logger.info(`Обработка категории: ${path}`);
           recordMetric('configured-category-start', { path });
@@ -262,6 +266,18 @@ try {
         recordMetric('store-end', { address: config.address, errors: categoryErrors - errorsBeforeStore, products: products.size - productsBeforeStore });
         break;
       } catch (error) {
+        if (selecting && !(error instanceof EmulatorUnavailableError) && !/ADBKeyboard|adb-keyboard\.apk|INSTALL_FAILED/.test(String(error))) {
+          selectionFailures++;
+          logger.error(`Ошибка выбора адреса ${config.address}, попытка ${selectionFailures}/3:`, error);
+          if (existsSync(resolve(output, 'stop.requested'))) throw error;
+          needsLaunch = true;
+          if (selectionFailures < 3) { attempt++; continue; }
+          process.exitCode = 1;
+          recordMetric('store-error', { address: config.address, message: error instanceof Error ? error.message : String(error) });
+          await writeFile(resolve(output, 'products.partial.json'), JSON.stringify([...products.values()], null, 2));
+          logger.error(`Адрес ${config.address} пропущен после трёх попыток; продолжаем со следующим`);
+          break;
+        }
         if (!(error instanceof EmulatorUnavailableError) || restarts >= 2 || existsSync(resolve(output, 'stop.requested'))) throw error;
         restarts++;
         attempt++;
@@ -287,7 +303,7 @@ try {
     }
   }
   if (process.exitCode) await writeFile(resolve(output, 'products.partial.json'), JSON.stringify([...products.values()], null, 2));
-  logger.info(`Собрано ${products.size} товаров${process.exitCode ? '; сбор завершён с ошибками категорий' : ''}. ${output}`);
+  logger.info(`Собрано ${products.size} товаров${process.exitCode ? '; сбор завершён с ошибками' : ''}. ${output}`);
   recordMetric('collection-end', { products: products.size });
 } catch (error) {
   logger.error(error);
