@@ -3,6 +3,10 @@ screenshots/
 artifacts/
 android-sdk/
 android-avd/
+private-avd/
+*.tar.gz
+*.tar.gz.partial
+*.tar.gz.sha256
 outputs/
 .env
 .env.*
