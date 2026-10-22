@@ -74,7 +74,7 @@ export class Android {
     const [x1, y1, x2, y2] = node.bounds;
     await this.command('shell', 'input', 'tap', String(Math.round((x1 + x2) / 2)), String(Math.round((y1 + y2) / 2)));
     recordMetric('tap', { label: node.text });
-    await delay(600);
+    await delay(500);
   }
 
   async click(text: string) {
@@ -91,6 +91,6 @@ export class Android {
     const bottom = String(Math.round(y1 + (y2 - y1) * .8));
     await this.command('shell', 'input', 'swipe', x, up ? top : bottom, x, up ? bottom : top, '450');
     recordMetric('scroll', { context, direction: up ? 'up' : 'down' });
-    await delay(1000);
+    await delay(900);
   }
 }

@@ -1,5 +1,5 @@
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { resolve, relative } from 'node:path';
 import { Android, avdName, delay, type UiNode } from '../../android.js';
 import { createLogger } from '../../logger.js';
 import { matchesAddress, parseAddress } from './address.js';
@@ -9,7 +9,7 @@ const android = new Android(process.env.ANDROID_SERIAL || 'emulator-5554');
 const packageId = 'ru.tkleto.app.magazinpobeda';
 const output = process.env.RUN_OUTPUT_DIR || resolve('outputs/pobeda', new Date().toISOString().replace(/[:.]/g, '-'));
 const logger = createLogger(resolve(output, 'run.log'));
-const products = new Map<string, { name: string; price: number | null; available: boolean; category: string; address: string }>();
+const products = new Map<string, { name: string; price: number | null; available: boolean; category: string; address: string; screenshot: string }>();
 
 async function categoryError(path: string, error: unknown) {
   logger.error(`Ошибка категории ${path}; продолжаем сбор:`, error);
@@ -24,7 +24,7 @@ async function returnToCategory(name: string) {
     if (nodes.some((n) => n.text === name) && !nodes.some((n) => n.className === 'android.widget.EditText')) return;
     if (attempt < 6) {
       await android.command('shell', 'input', 'keyevent', '4');
-      await delay(500);
+      await delay(450);
     }
   }
   throw new Error(`Не удалось вернуться в категорию: ${name}`);
@@ -77,13 +77,14 @@ async function collect(path: string, address: string, directory: string) {
       if (node.clickable && texts.some((t) => /₽|Нет в наличии/i.test(t)) && texts.length < 10) {
         const name = texts.find((t) => !/₽|Нет в наличии/i.test(t));
         const price = texts.find((t) => /₽/.test(t));
-        if (name && (price || texts.includes('Нет в наличии'))) products.set(`${address}|${path}|${name}`, { name, price: price ? Number(price.replace(/[^\d,]/g, '').replace(',', '.')) : null, available: !texts.includes('Нет в наличии'), category: path, address });
+        if (name && (price || texts.includes('Нет в наличии'))) products.set(`${address}|${path}|${name}`, { name, price: price ? Number(price.replace(/[^\d,]/g, '').replace(',', '.')) : null, available: !texts.includes('Нет в наличии'), category: path, address, screenshot: relative(output, file).replaceAll('\\', '/') });
       } else node.children.forEach(visit);
     };
+    const file = resolve(directory, `${path.replaceAll('/', '-')}-${page + 1}.png`);
+    const screenshot = await android.command('exec-out', 'screencap', '-p');
+    await writeFile(file, screenshot);
     nodes.forEach(visit);
     logger.info(`${path}: экран ${page + 1}, всего собрано ${products.size} товаров`);
-    const screenshot = await android.command('exec-out', 'screencap', '-p');
-    await writeFile(resolve(directory, `${path.replaceAll('/', '-')}-${page + 1}.png`), screenshot);
     recordMetric('screenshot', { path, page: page + 1, bytes: screenshot.length });
     if (signature === previous || !android.flatten(nodes).some((n) => n.scrollable)) { logger.info(`${path}: конец списка`); recordMetric('leaf-end', { path, empty: false }); return; }
     previous = signature;
@@ -138,7 +139,7 @@ async function extractCategory(path: string, address: string, directory: string,
 try {
   recordMetric('run-start');
   logger.info(`Запуск Победы: ${android.serial}. Результаты: ${output}`);
-  const configs = JSON.parse(await readFile(new URL('./config.json', import.meta.url), 'utf8')) as { address: string; categories: string[] }[];
+  const configs = JSON.parse(await readFile(process.env.POBEDA_CONFIG ? resolve(process.env.POBEDA_CONFIG) : new URL('./config.json', import.meta.url), 'utf8')) as { address: string; categories: string[] }[];
   if (!Array.isArray(configs) || !configs.length || configs.some((config) => !config.address?.trim() || !Array.isArray(config.categories) || config.categories.some((path) => typeof path !== 'string' || !path.trim()))) {
     throw new Error('config.json должен содержать массив объектов с address и categories');
   }
@@ -171,7 +172,7 @@ try {
         const keyboard = (await android.command('shell', 'settings', 'get', 'secure', 'default_input_method')).toString().trim();
         const install = (await android.command('install', '-r', '--bypass-low-target-sdk-block', resolve('adb-keyboard.apk'))).toString();
         if (!install.includes('Success')) throw new Error(`Не установлена ADBKeyboard: ${install}`);
-        await delay(1000);
+        await delay(900);
         let address: UiNode | undefined;
         let select: UiNode | undefined;
         const query = parseAddress(config.address).query;
@@ -185,7 +186,7 @@ try {
             recordMetric('store-query', { query: search });
             await android.command('shell', 'am', 'broadcast', '-a', 'ADB_CLEAR_TEXT');
             await android.command('shell', 'am', 'broadcast', '-a', 'ADB_INPUT_B64', '--es', 'msg', Buffer.from(search).toString('base64'));
-            await delay(1500);
+            await delay(1300);
             await android.wait((nodes) => nodes.some((n) => n.text === 'Выбрать' || /ничего не найдено/i.test(n.text)), 'Поиск магазинов не завершился');
             let previous = '';
             for (let page = 0; page < 50; page++) {
@@ -213,7 +214,7 @@ try {
         if (address) {
           selectedAddress = address.text;
           if (!select) throw new Error('Не найдена кнопка выбора магазина');
-          await delay(500);
+          await delay(450);
           if (android.flatten(await android.ui()).some((n) => n.text === 'Сменить')) await android.click('Сменить');
         } else throw new Error(`Адрес не найден: ${config.address}`);
         for (let i = 0; i < 3; i++) {
