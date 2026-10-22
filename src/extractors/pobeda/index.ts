@@ -1,6 +1,8 @@
-import { readFile, mkdir, writeFile } from 'node:fs/promises';
+import { access, readFile, mkdir, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { resolve, relative } from 'node:path';
-import { Android, avdName, delay, type UiNode } from '../../android.js';
+import { Android, avdName, delay, EmulatorUnavailableError, type UiNode } from '../../android.js';
+import { assertStopped } from '../../avd-template.js';
 import { createLogger } from '../../logger.js';
 import { matchesAddress, parseAddress } from './address.js';
 import { recordMetric } from '../../metrics.js';
@@ -13,6 +15,7 @@ const products = new Map<string, { name: string; price: number | null; available
 let categoryErrors = 0;
 
 async function categoryError(path: string, error: unknown) {
+  if (error instanceof EmulatorUnavailableError) throw error;
   categoryErrors++;
   logger.error(`Ошибка категории ${path}; продолжаем сбор:`, error);
   recordMetric('category-error', { path, message: error instanceof Error ? error.message : String(error) });
@@ -138,14 +141,7 @@ async function extractCategory(path: string, address: string, directory: string,
   }
 }
 
-try {
-  recordMetric('run-start');
-  logger.info(`Запуск Победы: ${android.serial}. Результаты: ${output}`);
-  const configs = JSON.parse(await readFile(process.env.POBEDA_CONFIG ? resolve(process.env.POBEDA_CONFIG) : new URL('./config.json', import.meta.url), 'utf8')) as { address: string; categories: string[] }[];
-  if (!Array.isArray(configs) || !configs.length || configs.some((config) => !config.address?.trim() || !Array.isArray(config.categories) || config.categories.some((path) => typeof path !== 'string' || !path.trim()))) {
-    throw new Error('config.json должен содержать массив объектов с address и categories');
-  }
-  configs.forEach((config) => parseAddress(config.address));
+async function openApp() {
   logger.info('Ожидание готовности Android');
   await android.start(avdName);
   logger.info('Запуск приложения');
@@ -154,102 +150,145 @@ try {
   const initial = await android.wait((nodes) => nodes.some((n) => /войти|войд|вход|авториз/iu.test(n.text)) || nodes.some((n) => n.text === 'Главная'), 'Приложение не загрузилось');
   recordMetric('app-ready');
   if (android.flatten(initial).some((n) => /\b(?:login)\b|войти|войд|вход|авториз/iu.test(n.text))) {
-    logger.error('В приложении нужна авторизация');
-    process.exitCode = 1;
-  } else {
-    for (const [index, config] of configs.entries()) {
-      const errorsBeforeStore = categoryErrors;
-      const productsBeforeStore = products.size;
-      logger.info(`Магазин ${index + 1}/${configs.length}: проверка адреса ${config.address}`);
-      recordMetric('store-start', { address: config.address });
-      const directory = resolve(output, `store-${index + 1}`);
-      await mkdir(directory, { recursive: true });
-      await android.click('Главная');
-      const home = await android.wait((nodes) => nodes.some((n) => n.text.includes('любимый магазин') || /,/.test(n.text) && n.bounds[1] < 400), 'Не загрузилась главная страница');
-      const homeAddress = android.flatten(home).find((n) => n.text.includes('любимый магазин') || /,/.test(n.text) && n.bounds[1] < 400)!;
-      let selectedAddress = homeAddress.text;
-      if (matchesAddress(homeAddress.text, config.address)) {
-        logger.info(`Нужный магазин уже выбран на главной: ${homeAddress.text}; выбор пропущен`);
-      } else {
-        await android.tap(homeAddress);
-        await android.wait((nodes) => nodes.some((n) => n.text === 'Выбрать'), 'Не загрузился список магазинов');
-        const keyboard = (await android.command('shell', 'settings', 'get', 'secure', 'default_input_method')).toString().trim();
-        const install = (await android.command('install', '-r', '--bypass-low-target-sdk-block', resolve('adb-keyboard.apk'))).toString();
-        if (!install.includes('Success')) throw new Error(`Не установлена ADBKeyboard: ${install}`);
-        await delay(900);
-        let address: UiNode | undefined;
-        let select: UiNode | undefined;
-        const query = parseAddress(config.address).query;
-        try {
-          await android.command('shell', 'ime', 'enable', 'com.android.adbkeyboard/.AdbIME');
-          await android.command('shell', 'ime', 'set', 'com.android.adbkeyboard/.AdbIME');
-          const stores = await android.ui();
-          await android.tap(android.flatten(stores).find((n) => n.className === 'android.widget.EditText')!);
-          for (const search of new Set([config.address, query, ...[...query.matchAll(/е/g)].map((match) => query.slice(0, match.index) + 'ё' + query.slice(match.index + 1))])) {
-            logger.info(`Запрос поиска магазина: ${search}`);
-            recordMetric('store-query', { query: search });
-            await android.command('shell', 'am', 'broadcast', '-a', 'ADB_CLEAR_TEXT');
-            await android.command('shell', 'am', 'broadcast', '-a', 'ADB_INPUT_B64', '--es', 'msg', Buffer.from(search).toString('base64'));
-            await delay(1300);
-            await android.wait((nodes) => nodes.some((n) => n.text === 'Выбрать' || /ничего не найдено/i.test(n.text)), 'Поиск магазинов не завершился');
-            let previous = '';
-            for (let page = 0; page < 50; page++) {
-              const nodes = await android.ui();
-              const flat = android.flatten(nodes);
-              for (const candidate of flat.filter((n) => n.className !== 'android.widget.EditText' && matchesAddress(n.text, config.address))) {
-                select = flat.filter((n) => n.text === 'Выбрать' && Math.abs(n.bounds[1] - candidate.bounds[1]) < 220)
-                  .sort((a, b) => Math.abs(a.bounds[1] - candidate.bounds[1]) - Math.abs(b.bounds[1] - candidate.bounds[1]))[0];
-                if (select) { address = candidate; break; }
+    throw new Error('В приложении нужна авторизация');
+  }
+}
+
+try {
+  recordMetric('run-start');
+  logger.info(`Запуск Победы: ${android.serial}. Результаты: ${output}`);
+  const configs = JSON.parse(await readFile(process.env.POBEDA_CONFIG ? resolve(process.env.POBEDA_CONFIG) : new URL('./config.json', import.meta.url), 'utf8')) as { address: string; categories: string[] }[];
+  if (!Array.isArray(configs) || !configs.length || configs.some((config) => !config.address?.trim() || !Array.isArray(config.categories) || config.categories.some((path) => typeof path !== 'string' || !path.trim()))) {
+    throw new Error('config.json должен содержать массив объектов с address и categories');
+  }
+  configs.forEach((config) => parseAddress(config.address));
+  let restarts = 0;
+  let needsLaunch = true;
+  for (const [index, config] of configs.entries()) {
+    const errorsBeforeStore = categoryErrors;
+    const productsBeforeStore = products.size;
+    let attempt = 0;
+    for (;;) {
+      try {
+        if (needsLaunch) { await openApp(); needsLaunch = false; }
+        logger.info(`Магазин ${index + 1}/${configs.length}: проверка адреса ${config.address}`);
+        recordMetric('store-start', { address: config.address });
+        const directory = resolve(output, `store-${index + 1}`, ...(attempt ? [`attempt-${attempt + 1}`] : []));
+        await mkdir(directory, { recursive: true });
+        await android.click('Главная');
+        const home = await android.wait((nodes) => nodes.some((n) => n.text.includes('любимый магазин') || /,/.test(n.text) && n.bounds[1] < 400), 'Не загрузилась главная страница');
+        const homeAddress = android.flatten(home).find((n) => n.text.includes('любимый магазин') || /,/.test(n.text) && n.bounds[1] < 400)!;
+        let selectedAddress = homeAddress.text;
+        if (matchesAddress(homeAddress.text, config.address)) {
+          logger.info(`Нужный магазин уже выбран на главной: ${homeAddress.text}; выбор пропущен`);
+        } else {
+          await android.tap(homeAddress);
+          await android.wait((nodes) => nodes.some((n) => n.text === 'Выбрать'), 'Не загрузился список магазинов');
+          const keyboard = (await android.command('shell', 'settings', 'get', 'secure', 'default_input_method')).toString().trim();
+          const installedKeyboard = (await android.command('shell', 'ime', 'list', '-a', '-s')).toString();
+          if (!installedKeyboard.includes('com.android.adbkeyboard/.AdbIME')) {
+            try { await access(resolve('adb-keyboard.apk')); } catch { throw new Error('ADBKeyboard не установлена и отсутствует adb-keyboard.apk в корне проекта. Скопируйте APK на сервер; перезапуск Android эту ошибку не исправит.'); }
+            const install = (await android.command('install', '-r', '--bypass-low-target-sdk-block', resolve('adb-keyboard.apk'))).toString();
+            if (!install.includes('Success')) throw new Error(`Не установлена ADBKeyboard: ${install}`);
+            await delay(900);
+          }
+          let address: UiNode | undefined;
+          let select: UiNode | undefined;
+          const query = parseAddress(config.address).query;
+          try {
+            await android.command('shell', 'ime', 'enable', 'com.android.adbkeyboard/.AdbIME');
+            await android.command('shell', 'ime', 'set', 'com.android.adbkeyboard/.AdbIME');
+            const stores = await android.ui();
+            await android.tap(android.flatten(stores).find((n) => n.className === 'android.widget.EditText')!);
+            for (const search of new Set([config.address, query, ...[...query.matchAll(/е/g)].map((match) => query.slice(0, match.index) + 'ё' + query.slice(match.index + 1))])) {
+              logger.info(`Запрос поиска магазина: ${search}`);
+              recordMetric('store-query', { query: search });
+              await android.command('shell', 'am', 'broadcast', '-a', 'ADB_CLEAR_TEXT');
+              await android.command('shell', 'am', 'broadcast', '-a', 'ADB_INPUT_B64', '--es', 'msg', Buffer.from(search).toString('base64'));
+              await delay(1300);
+              await android.wait((nodes) => nodes.some((n) => n.text === 'Выбрать' || /ничего не найдено/i.test(n.text)), 'Поиск магазинов не завершился');
+              let previous = '';
+              for (let page = 0; page < 50; page++) {
+                const nodes = await android.ui();
+                const flat = android.flatten(nodes);
+                for (const candidate of flat.filter((n) => n.className !== 'android.widget.EditText' && matchesAddress(n.text, config.address))) {
+                  select = flat.filter((n) => n.text === 'Выбрать' && Math.abs(n.bounds[1] - candidate.bounds[1]) < 220)
+                    .sort((a, b) => Math.abs(a.bounds[1] - candidate.bounds[1]) - Math.abs(b.bounds[1] - candidate.bounds[1]))[0];
+                  if (select) { address = candidate; break; }
+                }
+                if (address) break;
+                const signature = flat.filter((n) => n.text && n.className !== 'android.widget.EditText').map((n) => n.text + n.bounds.join(',')).join('|');
+                if (signature === previous || !flat.some((n) => n.scrollable) || flat.some((n) => /ничего не найдено/i.test(n.text))) break;
+                if (page === 49) throw new Error(`Превышен лимит прокрутки магазинов: ${search}`);
+                previous = signature;
+                await android.scroll(nodes, false, 'store-search');
               }
               if (address) break;
-              const signature = flat.filter((n) => n.text && n.className !== 'android.widget.EditText').map((n) => n.text + n.bounds.join(',')).join('|');
-              if (signature === previous || !flat.some((n) => n.scrollable) || flat.some((n) => /ничего не найдено/i.test(n.text))) break;
-              if (page === 49) throw new Error(`Превышен лимит прокрутки магазинов: ${search}`);
-              previous = signature;
-              await android.scroll(nodes, false, 'store-search');
             }
-            if (address) break;
+            if (address && select) {
+              logger.info(`Адрес сопоставлен: ${config.address} → ${address.text}`);
+              await android.tap(select);
+            }
+          } finally { await android.command('shell', 'ime', 'set', keyboard); }
+          if (address) {
+            selectedAddress = address.text;
+            if (!select) throw new Error('Не найдена кнопка выбора магазина');
+            await delay(450);
+            if (android.flatten(await android.ui()).some((n) => n.text === 'Сменить')) await android.click('Сменить');
+          } else throw new Error(`Адрес не найден: ${config.address}`);
+          for (let i = 0; i < 3; i++) {
+            if (android.flatten(await android.ui()).some((n) => n.text === 'Главная')) break;
+            await android.command('shell', 'input', 'keyevent', '4');
           }
-          if (address && select) {
-            logger.info(`Адрес сопоставлен: ${config.address} → ${address.text}`);
-            await android.tap(select);
-          }
-        } finally { await android.command('shell', 'ime', 'set', keyboard); }
-        if (address) {
-          selectedAddress = address.text;
-          if (!select) throw new Error('Не найдена кнопка выбора магазина');
-          await delay(450);
-          if (android.flatten(await android.ui()).some((n) => n.text === 'Сменить')) await android.click('Сменить');
-        } else throw new Error(`Адрес не найден: ${config.address}`);
-        for (let i = 0; i < 3; i++) {
-          if (android.flatten(await android.ui()).some((n) => n.text === 'Главная')) break;
-          await android.command('shell', 'input', 'keyevent', '4');
+          await android.wait((nodes) => nodes.some((n) => matchesAddress(n.text, config.address) && n.bounds[1] < 400), 'Выбранный магазин не подтверждён на главной');
         }
-        await android.wait((nodes) => nodes.some((n) => matchesAddress(n.text, config.address) && n.bounds[1] < 400), 'Выбранный магазин не подтверждён на главной');
-      }
-      logger.info(`Магазин: ${selectedAddress}`);
-      recordMetric('store-selected', { address: selectedAddress });
-      for (const path of config.categories) {
-        logger.info(`Обработка категории: ${path}`);
-        recordMetric('configured-category-start', { path });
+        logger.info(`Магазин: ${selectedAddress}`);
+        recordMetric('store-selected', { address: selectedAddress });
+        for (const path of config.categories) {
+          logger.info(`Обработка категории: ${path}`);
+          recordMetric('configured-category-start', { path });
+          try {
+            await android.click('Каталог');
+            await returnToCategory('Категории товаров');
+            for (const [index, part] of path.split('/').entries()) await category(part, path.split('/').slice(0, index + 1).join('/'));
+            await extractCategory(path, selectedAddress, directory);
+            recordMetric('configured-category-end', { path });
+          } catch (error) {
+            await categoryError(path, error);
+            recordMetric('configured-category-error', { path });
+          }
+        }
+        await writeFile(resolve(output, 'products.json'), JSON.stringify([...products.values()], null, 2));
+        recordMetric('store-end', { address: config.address, errors: categoryErrors - errorsBeforeStore, products: products.size - productsBeforeStore });
+        break;
+      } catch (error) {
+        if (!(error instanceof EmulatorUnavailableError) || restarts >= 2 || existsSync(resolve(output, 'stop.requested'))) throw error;
+        restarts++;
+        attempt++;
+        logger.error(`Эмулятор недоступен. Перезапуск ${restarts}/2; повторяем адрес ${config.address}:`, error);
+        recordMetric('emulator-restart', { address: config.address, attempt: restarts, message: error.message });
+        await writeFile(resolve(output, 'products.partial.json'), JSON.stringify([...products.values()], null, 2));
         try {
-          await android.click('Каталог');
-          await returnToCategory('Категории товаров');
-          for (const [index, part] of path.split('/').entries()) await category(part, path.split('/').slice(0, index + 1).join('/'));
-          await extractCategory(path, selectedAddress, directory);
-          recordMetric('configured-category-end', { path });
-        } catch (error) {
-          await categoryError(path, error);
-          recordMetric('configured-category-error', { path });
+          const current = (await android.command('emu', 'avd', 'name')).toString().split(/\r?\n/)[0].trim();
+          if (current !== avdName) throw new Error(`Порт занят другим AVD: ${current}`);
+          await android.command('emu', 'kill');
+        } catch (stopError) {
+          // A crashed emulator is normally already absent from ADB; confirm via processes below.
+          if (stopError instanceof Error && stopError.message.startsWith('Порт занят')) throw stopError;
         }
+        let stopped = false;
+        for (let wait = 0; wait < 30; wait++) {
+          try { await assertStopped(avdName); stopped = true; break; } catch { await delay(1000); }
+        }
+        if (!stopped) throw new Error('Не подтверждена остановка эмулятора; безопасный перезапуск отменён');
+        await delay(3000);
+        needsLaunch = true;
       }
-      await writeFile(resolve(output, 'products.json'), JSON.stringify([...products.values()], null, 2));
-      recordMetric('store-end', { address: config.address, errors: categoryErrors - errorsBeforeStore, products: products.size - productsBeforeStore });
     }
-    if (process.exitCode) await writeFile(resolve(output, 'products.partial.json'), JSON.stringify([...products.values()], null, 2));
-    logger.info(`Собрано ${products.size} товаров${process.exitCode ? '; сбор завершён с ошибками категорий' : ''}. ${output}`);
-    recordMetric('collection-end', { products: products.size });
   }
+  if (process.exitCode) await writeFile(resolve(output, 'products.partial.json'), JSON.stringify([...products.values()], null, 2));
+  logger.info(`Собрано ${products.size} товаров${process.exitCode ? '; сбор завершён с ошибками категорий' : ''}. ${output}`);
+  recordMetric('collection-end', { products: products.size });
 } catch (error) {
   logger.error(error);
   recordMetric('fatal-error', { message: error instanceof Error ? error.message : String(error) });

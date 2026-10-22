@@ -47,7 +47,11 @@ show();
 const completed: Promise<void>[] = [];
 let stopping = false;
 // Let workers and their emulators finish cleanup when Ctrl+C is pressed.
-const stop = () => { stopping = true; console.log('Новые потоки не запускаются. Ждём завершения уже работающих и очистки AVD.'); };
+const stop = () => {
+  stopping = true;
+  for (const worker of workers) if (worker.directory && !worker.ended) writeFileSync(resolve(worker.directory, 'stop.requested'), '');
+  console.log('Новые потоки и автоперезапуски отключены. Ждём завершения уже работающих и очистки AVD.');
+};
 process.on('SIGINT', stop);
 try {
   for (const worker of workers) {
@@ -68,6 +72,7 @@ try {
         if (!message || typeof message !== 'object') return;
         const event = message as Record<string, unknown>;
         updateProgress(worker, event);
+        if (stopping && event.type === 'worker-ready') writeFileSync(resolve(worker.directory, 'stop.requested'), '');
         appendFileSync(resolve(directory, 'progress.jsonl'), JSON.stringify({ time: new Date().toISOString(), worker: worker.worker, ...event }) + '\n');
         save();
         if (event.type !== 'configured-category-start' || process.stdout.isTTY) show();

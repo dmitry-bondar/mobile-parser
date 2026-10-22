@@ -9,17 +9,31 @@ import { graphicsArguments } from './emulator-options.js';
 export type UiNode = { text: string; description: string; bounds: number[]; clickable: boolean; scrollable: boolean; className: string; children: UiNode[] };
 export const delay = (ms: number) => new Promise((done) => setTimeout(done, ms));
 export const avdName = process.env.ANDROID_AVD || 'mobile-parser-playstore-api35-recovery';
+export class EmulatorUnavailableError extends Error {}
 
 export class Android {
+  private emulatorFailure?: EmulatorUnavailableError;
   constructor(public serial: string) {}
 
   async command(...args: string[]) {
-    const result = (await runAdb(['-s', this.serial, ...args])).stdout;
-    if (args.join(' ') === 'shell input keyevent 4') recordMetric('back');
-    return result;
+    const control = args[0] === 'emu';
+    if (!control && this.emulatorFailure) throw this.emulatorFailure;
+    try {
+      const result = (await runAdb(['-s', this.serial, ...args])).stdout;
+      if (!control && this.emulatorFailure) throw this.emulatorFailure;
+      if (args.join(' ') === 'shell input keyevent 4') recordMetric('back');
+      return result;
+    } catch (error) {
+      if (!control && this.emulatorFailure) throw this.emulatorFailure;
+      if (!control && /device (?:offline|['"]?emulator-\d+['"]? not found)|no devices\/emulators found|error: closed|transport error/i.test(String(error))) {
+        throw new EmulatorUnavailableError(`Потеряна связь с ${this.serial}: ${String(error)}`);
+      }
+      throw error;
+    }
   }
 
   async start(avd: string) {
+    this.emulatorFailure = undefined;
     const graphics = graphicsArguments(process.env.ANDROID_EMULATOR_GPU, process.env.ANDROID_EMULATOR_NO_VULKAN === '1');
     let launchError: Error | undefined;
     let launchFailed = new Promise<never>(() => {});
@@ -48,7 +62,7 @@ export class Android {
             reject(launchError);
           });
           child.once('exit', (code, signal) => {
-            launchError = new Error(`Процесс эмулятора завершился: код ${code}, сигнал ${signal}. Журнал: ${log}`);
+            launchError = this.emulatorFailure = new EmulatorUnavailableError(`Процесс эмулятора завершился: код ${code}, сигнал ${signal}. Журнал: ${log}`);
             appendFileSync(log, `${new Date().toISOString()} ${launchError.message}\n`);
             reject(launchError);
           });

@@ -43,6 +43,12 @@ export function updateProgress(worker: WorkerProgress, event: Record<string, unk
     }
     case 'worker-cleanup': worker.status = 'Очистка AVD'; break;
     case 'worker-error': worker.error = String(event.message); break;
+    case 'emulator-restart':
+      worker.status = `Перезапуск ${event.attempt}/2`;
+      worker.current = String(event.address);
+      worker.category = '';
+      worker.error = String(event.message);
+      break;
   }
 }
 

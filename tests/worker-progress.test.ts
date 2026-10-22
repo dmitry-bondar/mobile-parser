@@ -67,3 +67,15 @@ test('startup error and cancellation cannot report unstarted addresses as comple
   assert.ok(state.addresses.every((address) => address.status === 'Не запущен'));
   assert.equal(state.status, 'Ошибка');
 });
+
+test('emulator restart does not turn an already completed address into an error', () => {
+  const state = worker();
+  updateProgress(state, { type: 'store-start', address: 'Адрес 1' });
+  updateProgress(state, { type: 'store-end', address: 'Адрес 1', products: 5, errors: 0 });
+  updateProgress(state, { type: 'emulator-restart', address: 'Адрес 2', attempt: 1, message: 'native crash' });
+  assert.equal(state.status, 'Перезапуск 1/2');
+  updateProgress(state, { type: 'fatal-error', message: 'Повторы исчерпаны' });
+  finishProgress(state, 1);
+  assert.equal(state.addresses[0].status, 'Готово');
+  assert.equal(state.addresses[0].errors.length, 0);
+});
