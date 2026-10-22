@@ -1,4 +1,4 @@
-import { cp, lstat, mkdir, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
+import { cp, lstat, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, resolve } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -29,7 +29,12 @@ export async function imageProperties(config: string) {
 export async function copyAvd(source: string, target: string, name: string) {
   if ((await lstat(source)).isSymbolicLink() || (await readdir(source, { recursive: true, withFileTypes: true })).some((entry) => entry.isSymbolicLink())) throw new Error('Ссылки/junction в шаблоне AVD запрещены');
   console.log(`Копирование AVD: ${basename(source)} → ${basename(target)}`);
-  await mkdir(target); // Never overwrite an existing device.
+  try {
+    await lstat(target);
+    throw new Error(`Папка AVD уже существует: ${target}`);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
   await cp(source, target, {
     recursive: true, errorOnExist: true, force: false,
     filter: (path) => !/\.lock$|\.qcow2$/.test(path) && !['snapshots', 'tmpAdbCmds', 'hardware-qemu.ini', 'emu-launch-params.txt', 'quickbootChoice.ini', 'read-snapshot.txt'].includes(basename(path)),
