@@ -10,6 +10,15 @@ const createCategory = new Function('android', 'recordMetric', ts.transpileModul
 const extract = source.slice(source.indexOf('async function extractCategory('), source.indexOf('\ntry {'));
 const createExtract = new Function('android', 'logger', 'category', 'collect', 'categoryError', 'returnToCategory', ts.transpileModule(extract, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText + '; return extractCategory;');
 
+test('empty screen without search or sorting is a valid leaf category', async () => {
+  const nodes = [{ text: 'Напитки', bounds: [] }, { text: 'К сожалению, здесь пока пусто. Скоро добавим товары!', bounds: [] }];
+  const paths: string[] = [];
+  const run = createExtract({ wait: async () => nodes, flatten: (items: any[]) => items }, { info: () => {} },
+    () => assert.fail('No child categories'), async (path: string) => paths.push(path), () => assert.fail('No category error'), () => {});
+  await run('Кулинария/Напитки', 'Адрес', 'store-1');
+  assert.deepEqual(paths, ['Кулинария/Напитки']);
+});
+
 test('failed child is logged and the next child is collected after recovery', async () => {
   let screen = 'Мясо';
   const collected: string[] = [];

@@ -67,8 +67,8 @@ async function category(name: string, path = name) {
 
 async function collect(path: string, address: string, directory: string) {
   recordMetric('leaf-start', { path });
-  const initial = await android.wait((nodes) => nodes.some((n) => /₽|нет в наличии|нет товаров|ничего не найдено/i.test(n.text)), `Не загрузились товары: ${path}`);
-  if (android.flatten(initial).some((n) => /нет товаров|ничего не найдено/i.test(n.text))) {
+  const initial = await android.wait((nodes) => nodes.some((n) => /₽|нет в наличии|нет товаров|ничего не найдено|здесь\s+пока\s+пусто|скоро\s+добавим\s+товары/iu.test(n.text)), `Не загрузились товары: ${path}`);
+  if (android.flatten(initial).some((n) => /нет товаров|ничего не найдено|здесь\s+пока\s+пусто|скоро\s+добавим\s+товары/iu.test(n.text))) {
     logger.info(`${path}: товаров нет`);
     recordMetric('leaf-end', { path, empty: true });
     return;
@@ -104,7 +104,7 @@ async function extractCategory(path: string, address: string, directory: string,
   const screen = android.flatten(initial).map((n) => `${n.text}|${n.className}|${n.clickable}|${n.bounds.join(',')}`).join('\n');
   if (ancestors.includes(screen)) throw new Error(`Циклический обход категории: ${path}`);
   if (ancestors.length >= 20) throw new Error(`Превышена глубина категорий: ${path}`);
-  if (android.flatten(initial).some((n) => n.className === 'android.widget.EditText' || n.text === 'По умолчанию')) {
+  if (android.flatten(initial).some((n) => n.className === 'android.widget.EditText' || n.text === 'По умолчанию' || /нет товаров|ничего не найдено|здесь\s+пока\s+пусто|скоро\s+добавим\s+товары/iu.test(n.text))) {
     await collect(path, address, directory);
     return;
   }
