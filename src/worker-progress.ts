@@ -1,5 +1,6 @@
 export type WorkerProgress = {
   worker: number;
+  profile?: string;
   status: string;
   directory: string;
   current: string;

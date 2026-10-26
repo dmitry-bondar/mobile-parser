@@ -182,6 +182,7 @@ try {
         const home = await android.wait((nodes) => nodes.some((n) => n.text.includes('любимый магазин') || /,/.test(n.text) && n.bounds[1] < 400), 'Не загрузилась главная страница');
         const homeAddress = android.flatten(home).find((n) => n.text.includes('любимый магазин') || /,/.test(n.text) && n.bounds[1] < 400)!;
         let selectedAddress = homeAddress.text;
+        if (process.env.POBEDA_LOCK_ADDRESS === '1' && !matchesAddress(homeAddress.text, config.address)) throw new Error(`Адрес профиля не соответствует закреплённому: ${config.address}. Выполните подготовку профиля.`);
         if (matchesAddress(homeAddress.text, config.address)) {
           logger.info(`Нужный магазин уже выбран на главной: ${homeAddress.text}; выбор пропущен`);
         } else {
@@ -248,7 +249,7 @@ try {
         logger.info(`Магазин: ${selectedAddress}`);
         recordMetric('store-selected', { address: selectedAddress });
         selecting = false;
-        for (const path of config.categories) {
+        for (const path of process.env.POBEDA_PREPARE_ONLY === '1' ? [] : config.categories) {
           logger.info(`Обработка категории: ${path}`);
           recordMetric('configured-category-start', { path });
           try {

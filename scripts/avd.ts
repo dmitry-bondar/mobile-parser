@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, writeFile, rename, open, access, unlink } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile, rename, open, access, unlink, type FileHandle } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
@@ -14,7 +14,7 @@ async function sha256(path: string) {
 }
 
 const [mode, name, argument, workersArgument = '1'] = process.argv.slice(2);
-if (!['pack', 'install', 'run', 'clone'].includes(mode) || !name || !argument) throw new Error('avd clone <source-AVD> <new-AVD> | pack <AVD> <archive.tar.gz> | install <new-AVD> <archive.tar.gz> | run <template-AVD> <worker> [workers=1]');
+if (!['pack', 'install', 'run', 'clone', 'prepare'].includes(mode) || !name || !argument) throw new Error('Нужны режим clone/pack/install/run/prepare и аргументы');
 avdPath(name);
 await mkdir(resolve('android-avd'), { recursive: true });
 await mkdir(resolve('private-avd'), { recursive: true });
@@ -30,20 +30,27 @@ if (mode === 'clone') {
   await copyAvd(avdPath(name), target, argument);
   await registerAvd(argument);
   console.log(`Создан постоянный профиль ${argument}. Исходный ${name} не изменён.`);
-} else if (mode === 'run') {
+} else if (mode === 'run' || mode === 'prepare') {
+  const preparing = mode === 'prepare';
   const worker = Number(argument);
   const workers = Number(workersArgument);
   if (!Number.isInteger(worker) || !Number.isInteger(workers) || worker < 1 || worker > workers || workers > 16) throw new Error('Нужны номера потоков 1..workers, максимум 16');
   const configs = JSON.parse(await readFile(process.env.POBEDA_CONFIG || 'src/extractors/pobeda/config.json', 'utf8'));
   if (!Array.isArray(configs) || workers > configs.length) throw new Error('Потоков больше, чем адресов');
-  const serial = `emulator-${5554 + 2 * (worker - 1)}`;
+  if (preparing && configs.length !== 1) throw new Error('Подготовка профиля требует ровно один адрес');
+  const slot = Number(process.env.AVD_SLOT || worker);
+  if (!Number.isInteger(slot) || slot < 1 || slot > 16) throw new Error('AVD_SLOT должен быть от 1 до 16');
+  const serial = `emulator-${5554 + 2 * (slot - 1)}`;
   const portLock = await open(resolve('android-avd', `.port-${serial}.lock`), 'wx');
-  const runtime = `mp-run-${randomUUID()}`;
-  const directory = resolve('outputs/pobeda', runtime);
+  const id = randomUUID();
+  const runtime = preparing ? name : `mp-run-${id}`;
+  const directory = resolve('outputs/pobeda', preparing ? `prepare-${id}` : runtime);
   const target = avdPath(runtime);
   let copied = false;
   let launched = false;
+  let profileLock: FileHandle | undefined;
   try {
+    if (preparing || process.env.POBEDA_PROFILE_JOB === '1') profileLock = await open(resolve('android-avd', `.profile-${name}.lock`), 'wx');
     const devices = (await runAdb(['devices'])).stdout.toString();
     if (devices.split(/\r?\n/).some((line) => line.startsWith(serial + '\t'))) throw new Error(`${serial} уже занят`);
     await assertStopped(name);
@@ -51,15 +58,17 @@ if (mode === 'clone') {
     await mkdir(directory, { recursive: true });
     await writeFile(resolve(directory, 'config.snapshot.json'), JSON.stringify(configs.filter((_: unknown, index: number) => index % workers === worker - 1), null, 2));
     if (process.connected) process.send?.({ type: 'worker-ready', directory, runtime }, () => {});
-    await copyAvd(avdPath(name), target, runtime);
-    copied = true;
-    await registerAvd(runtime);
+    if (!preparing) {
+      await copyAvd(avdPath(name), target, runtime);
+      copied = true;
+      await registerAvd(runtime);
+    }
     console.log(`Поток ${worker}/${workers}: ${serial}; результаты ${directory}`);
     launched = true;
     process.exitCode = await new Promise<number>((done, reject) => {
       const child = spawn(process.execPath, ['--import', 'tsx', 'src/extractors/pobeda/index.ts'], {
         stdio: ['inherit', 'inherit', 'inherit', 'ipc'], windowsHide: true,
-        env: { ...process.env, ANDROID_AVD: runtime, ANDROID_SERIAL: serial, POBEDA_CONFIG: resolve(directory, 'config.snapshot.json'), RUN_OUTPUT_DIR: directory },
+        env: { ...process.env, ANDROID_AVD: runtime, ANDROID_SERIAL: serial, POBEDA_CONFIG: resolve(directory, 'config.snapshot.json'), RUN_OUTPUT_DIR: directory, POBEDA_PREPARE_ONLY: preparing ? '1' : '0', POBEDA_LOCK_ADDRESS: preparing ? '0' : process.env.POBEDA_LOCK_ADDRESS },
       });
       child.once('error', reject);
       child.on('message', (message) => { if (process.connected) process.send?.(message, () => {}); });
@@ -74,14 +83,16 @@ if (mode === 'clone') {
           if (current === runtime) await runAdb(['-s', serial, 'emu', 'kill']);
         } catch { /* The extractor normally stops its emulator itself. */ }
       }
-      if (copied) {
+      if (copied || launched) {
         let stopped = false;
         for (let i = 0; i < 30; i++) {
           try { await assertStopped(runtime); stopped = true; break; } catch { await delay(1000); }
         }
         if (!stopped) throw new Error(`Копия ${runtime} оставлена: остановка не подтверждена`);
-        await removeRuntime(runtime);
-        console.log(`Временный AVD удалён; результаты сохранены: ${directory}`);
+        if (copied) {
+          await removeRuntime(runtime);
+          console.log(`Временный AVD удалён; результаты сохранены: ${directory}`);
+        } else console.log(`Постоянный профиль ${name} выключен и сохранён`);
       }
     } catch (error) {
       console.error(error);
@@ -90,6 +101,7 @@ if (mode === 'clone') {
     }
     await portLock.close();
     await unlink(resolve('android-avd', `.port-${serial}.lock`));
+    if (profileLock) { await profileLock.close(); await unlink(resolve('android-avd', `.profile-${name}.lock`)); }
   }
 } else {
   const archive = resolve(argument);

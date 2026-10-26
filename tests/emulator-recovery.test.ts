@@ -10,14 +10,14 @@ const body = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTa
 const execute = new (Object.getPrototypeOf(async function () {}).constructor)(
   'Android', 'avdName', 'delay', 'EmulatorUnavailableError', 'assertStopped', 'access', 'readFile', 'mkdir', 'writeFile', 'existsSync', 'resolve', 'relative', 'createLogger', 'matchesAddress', 'parseAddress', 'recordMetric', 'process', body);
 
-async function run(Android: any, stopped = false, apkMissing = false) {
+async function run(Android: any, stopped = false, apkMissing = false, env = {}) {
   const metrics: any[] = [];
   const directories: string[] = [];
   const writes: string[] = [];
-  const process = { env: {}, exitCode: 0 };
+  const process = { env, exitCode: 0 };
   let apkChecks = 0;
   await execute(Android, 'template', async () => {}, EmulatorUnavailableError, async () => {}, async () => { apkChecks++; if (apkMissing) throw new Error('ENOENT'); },
-    async () => JSON.stringify([{ address: 'Медынь, Молодежная,2А', categories: [] }, { address: 'Рязань, Спортивная,1', categories: [] }]),
+    async () => JSON.stringify([{ address: 'Медынь, Молодежная,2А', categories: 'POBEDA_PREPARE_ONLY' in env ? ['Мясо'] : [] }, { address: 'Рязань, Спортивная,1', categories: [] }]),
     async (path: string) => { directories.push(path); }, async (path: string) => { writes.push(path); }, () => stopped,
     resolve, relative, () => ({ info: () => {}, error: () => {} }), (a: string, b: string) => a === b, () => ({ query: 'улица' }),
     (type: string, details: any) => metrics.push({ type, ...details }), process);
@@ -34,6 +34,42 @@ test('crashed emulator restarts at most twice, retaining partial products', asyn
   assert.equal(starts, 3);
   assert.equal(result.metrics.filter((event) => event.type === 'emulator-restart').length, 2);
   assert.ok(result.writes.some((path) => path.endsWith('products.partial.json')));
+  assert.equal(result.code, 1);
+});
+
+test('preparation confirms addresses without entering catalog even when categories are configured', async () => {
+  let homes = 0;
+  const result = await run(class {
+    serial = 'emulator-5554';
+    async start() {}
+    async command(...args: string[]) { return Buffer.from(args.at(-1) === 'name' ? 'template' : ''); }
+    async click(text: string) { assert.equal(text, 'Главная'); homes++; }
+    flatten(nodes: any[]) { return nodes; }
+    async wait(_: unknown, message: string) {
+      if (message === 'Приложение не загрузилось') return [{ text: 'Главная' }];
+      return [{ text: homes === 1 ? 'Медынь, Молодежная,2А' : 'Рязань, Спортивная,1', bounds: [0, 100, 100, 200] }];
+    }
+  }, false, false, { POBEDA_PREPARE_ONLY: '1' });
+  assert.equal(result.code, 0);
+  assert.equal(result.metrics.filter((event) => event.type === 'store-end').length, 2);
+  assert.ok(!result.metrics.some((event) => event.type === 'configured-category-start'));
+});
+
+test('locked profile never opens store selection when the home address differs', async () => {
+  let taps = 0;
+  const result = await run(class {
+    serial = 'emulator-5554';
+    async start() {}
+    async command(...args: string[]) { return Buffer.from(args.at(-1) === 'name' ? 'template' : ''); }
+    async click() {}
+    async tap() { taps++; }
+    flatten(nodes: any[]) { return nodes; }
+    async wait(_: unknown, message: string) {
+      return message === 'Приложение не загрузилось' ? [{ text: 'Главная' }] : [{ text: 'Чужой город, Улица,1', bounds: [0, 100, 100, 200] }];
+    }
+  }, false, false, { POBEDA_LOCK_ADDRESS: '1' });
+  assert.equal(taps, 0);
+  assert.equal(result.metrics.filter((event) => event.type === 'store-error').length, 2);
   assert.equal(result.code, 1);
 });
 
