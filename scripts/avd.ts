@@ -14,12 +14,23 @@ async function sha256(path: string) {
 }
 
 const [mode, name, argument, workersArgument = '1'] = process.argv.slice(2);
-if (!['pack', 'install', 'run'].includes(mode) || !name || !argument) throw new Error('avd pack <AVD> <archive.tar.gz> | install <new-AVD> <archive.tar.gz> | run <template-AVD> <worker> [workers=1]');
+if (!['pack', 'install', 'run', 'clone'].includes(mode) || !name || !argument) throw new Error('avd clone <source-AVD> <new-AVD> | pack <AVD> <archive.tar.gz> | install <new-AVD> <archive.tar.gz> | run <template-AVD> <worker> [workers=1]');
 avdPath(name);
 await mkdir(resolve('android-avd'), { recursive: true });
 await mkdir(resolve('private-avd'), { recursive: true });
 
-if (mode === 'run') {
+if (mode === 'clone') {
+  const target = avdPath(argument);
+  await assertStopped(name);
+  await imageProperties(await readFile(resolve(avdPath(name), 'config.ini'), 'utf8'));
+  try {
+    await access(resolve('android-avd', `${argument}.ini`));
+    throw new Error(`Профиль ${argument} уже зарегистрирован; перезапись запрещена`);
+  } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+  await copyAvd(avdPath(name), target, argument);
+  await registerAvd(argument);
+  console.log(`Создан постоянный профиль ${argument}. Исходный ${name} не изменён.`);
+} else if (mode === 'run') {
   const worker = Number(argument);
   const workers = Number(workersArgument);
   if (!Number.isInteger(worker) || !Number.isInteger(workers) || worker < 1 || worker > workers || workers > 16) throw new Error('Нужны номера потоков 1..workers, максимум 16');
