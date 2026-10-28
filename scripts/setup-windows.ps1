@@ -71,7 +71,13 @@ try {
         if ((Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash -ne '90ae805d20434428bffcb699c290860f19bb5f66a67e6b330067e3de801fb04a') {
             throw "Android tools checksum mismatch. Download kept at $download."
         }
-        Expand-Archive -LiteralPath $zip -DestinationPath (Join-Path $download 'unpacked')
+        $unpacked = Join-Path $download 'unpacked'
+        New-Item -ItemType Directory $unpacked | Out-Null
+        & tar.exe -xf $zip -C $unpacked
+        if ($LASTEXITCODE -ne 0) { throw "Android tools extraction failed. Download kept at $download." }
+        if (-not (Test-Path -LiteralPath (Join-Path $unpacked 'cmdline-tools\bin\sdkmanager.bat'))) {
+            throw "Android tools archive has no sdkmanager.bat. Download kept at $download."
+        }
         New-Item -ItemType Directory -Force (Split-Path $destination -Parent) | Out-Null
         Move-Item -LiteralPath (Join-Path $download 'unpacked\cmdline-tools') -Destination $destination
         # Delete only this invocation's temporary directory, after checking its resolved parent.
