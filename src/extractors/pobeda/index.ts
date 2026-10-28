@@ -1,4 +1,4 @@
-import { access, readFile, mkdir, writeFile } from 'node:fs/promises';
+import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { resolve, relative } from 'node:path';
 import { Android, avdName, delay, EmulatorUnavailableError, type UiNode } from '../../android.js';
@@ -181,72 +181,9 @@ try {
         await android.click('Главная');
         const home = await android.wait((nodes) => nodes.some((n) => n.text.includes('любимый магазин') || /,/.test(n.text) && n.bounds[1] < 400), 'Не загрузилась главная страница');
         const homeAddress = android.flatten(home).find((n) => n.text.includes('любимый магазин') || /,/.test(n.text) && n.bounds[1] < 400)!;
-        let selectedAddress = homeAddress.text;
-        if (process.env.POBEDA_LOCK_ADDRESS === '1' && !matchesAddress(homeAddress.text, config.address)) throw new Error(`Адрес профиля не соответствует закреплённому: ${config.address}. Выполните подготовку профиля.`);
-        if (matchesAddress(homeAddress.text, config.address)) {
-          logger.info(`Нужный магазин уже выбран на главной: ${homeAddress.text}; выбор пропущен`);
-        } else {
-          await android.tap(homeAddress);
-          await android.wait((nodes) => nodes.some((n) => n.text === 'Выбрать'), 'Не загрузился список магазинов');
-          const keyboard = (await android.command('shell', 'settings', 'get', 'secure', 'default_input_method')).toString().trim();
-          const installedKeyboard = (await android.command('shell', 'ime', 'list', '-a', '-s')).toString();
-          if (!installedKeyboard.includes('com.android.adbkeyboard/.AdbIME')) {
-            try { await access(resolve('adb-keyboard.apk')); } catch { throw new Error('ADBKeyboard не установлена и отсутствует adb-keyboard.apk в корне проекта. Скопируйте APK на сервер; перезапуск Android эту ошибку не исправит.'); }
-            const install = (await android.command('install', '-r', '--bypass-low-target-sdk-block', resolve('adb-keyboard.apk'))).toString();
-            if (!install.includes('Success')) throw new Error(`Не установлена ADBKeyboard: ${install}`);
-            await delay(900);
-          }
-          let address: UiNode | undefined;
-          let select: UiNode | undefined;
-          const query = parseAddress(config.address).query;
-          try {
-            await android.command('shell', 'ime', 'enable', 'com.android.adbkeyboard/.AdbIME');
-            await android.command('shell', 'ime', 'set', 'com.android.adbkeyboard/.AdbIME');
-            const stores = await android.ui();
-            await android.tap(android.flatten(stores).find((n) => n.className === 'android.widget.EditText')!);
-            for (const search of new Set([config.address, query, ...[...query.matchAll(/е/g)].map((match) => query.slice(0, match.index) + 'ё' + query.slice(match.index + 1))])) {
-              logger.info(`Запрос поиска магазина: ${search}`);
-              recordMetric('store-query', { query: search });
-              await android.command('shell', 'am', 'broadcast', '-a', 'ADB_CLEAR_TEXT');
-              await android.command('shell', 'am', 'broadcast', '-a', 'ADB_INPUT_B64', '--es', 'msg', Buffer.from(search).toString('base64'));
-              await delay(1300);
-              await android.wait((nodes) => nodes.some((n) => n.text === 'Выбрать' || /ничего не найдено/i.test(n.text)), 'Поиск магазинов не завершился');
-              let previous = '';
-              for (let page = 0; page < 50; page++) {
-                const nodes = await android.ui();
-                const flat = android.flatten(nodes);
-                for (const candidate of flat.filter((n) => n.className !== 'android.widget.EditText' && matchesAddress(n.text, config.address))) {
-                  select = flat.filter((n) => n.text === 'Выбрать' && Math.abs(n.bounds[1] - candidate.bounds[1]) < 220)
-                    .sort((a, b) => Math.abs(a.bounds[1] - candidate.bounds[1]) - Math.abs(b.bounds[1] - candidate.bounds[1]))[0];
-                  if (select) { address = candidate; break; }
-                }
-                if (address) break;
-                const signature = flat.filter((n) => n.text && n.className !== 'android.widget.EditText').map((n) => n.text + n.bounds.join(',')).join('|');
-                if (signature === previous || !flat.some((n) => n.scrollable) || flat.some((n) => /ничего не найдено/i.test(n.text))) break;
-                if (page === 49) throw new Error(`Превышен лимит прокрутки магазинов: ${search}`);
-                previous = signature;
-                await android.scroll(nodes, false, 'store-search');
-              }
-              if (address) break;
-            }
-            if (address && select) {
-              logger.info(`Адрес сопоставлен: ${config.address} → ${address.text}`);
-              await android.tap(select);
-            }
-          } finally { await android.command('shell', 'ime', 'set', keyboard); }
-          if (address) {
-            selectedAddress = address.text;
-            if (!select) throw new Error('Не найдена кнопка выбора магазина');
-            await delay(450);
-            if (android.flatten(await android.ui()).some((n) => n.text === 'Сменить')) await android.click('Сменить');
-          } else throw new Error(`Адрес не найден: ${config.address}`);
-          for (let i = 0; i < 3; i++) {
-            if (android.flatten(await android.ui()).some((n) => n.text === 'Главная')) break;
-            await android.command('shell', 'input', 'keyevent', '4');
-          }
-          await android.wait((nodes) => nodes.some((n) => matchesAddress(n.text, config.address) && n.bounds[1] < 400), 'Выбранный магазин не подтверждён на главной');
-        }
-        logger.info(`Магазин: ${selectedAddress}`);
+        if (!matchesAddress(homeAddress.text, config.address)) throw new Error(`Адрес профиля не соответствует конфигу: ${config.address}; на главной: ${homeAddress.text}. Установите адрес вручную в постоянном профиле.`);
+        const selectedAddress = homeAddress.text;
+        logger.info(`Адрес подтверждён: ${selectedAddress}`);
         recordMetric('store-selected', { address: selectedAddress });
         selecting = false;
         for (const path of process.env.POBEDA_PREPARE_ONLY === '1' ? [] : config.categories) {
@@ -267,9 +204,9 @@ try {
         recordMetric('store-end', { address: config.address, errors: categoryErrors - errorsBeforeStore, products: products.size - productsBeforeStore });
         break;
       } catch (error) {
-        if (selecting && !(error instanceof EmulatorUnavailableError) && !/ADBKeyboard|adb-keyboard\.apk|INSTALL_FAILED/.test(String(error))) {
+        if (selecting && !(error instanceof EmulatorUnavailableError)) {
           selectionFailures++;
-          logger.error(`Ошибка выбора адреса ${config.address}, попытка ${selectionFailures}/3:`, error);
+          logger.error(`Ошибка проверки адреса ${config.address}, попытка ${selectionFailures}/3:`, error);
           if (existsSync(resolve(output, 'stop.requested'))) throw error;
           needsLaunch = true;
           if (selectionFailures < 3) { attempt++; continue; }

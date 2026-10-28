@@ -55,7 +55,7 @@ test('preparation confirms addresses without entering catalog even when categori
   assert.ok(!result.metrics.some((event) => event.type === 'configured-category-start'));
 });
 
-test('locked profile never opens store selection when the home address differs', async () => {
+test('all launch modes reject a different address without selection or installation', async () => {
   let taps = 0;
   const result = await run(class {
     serial = 'emulator-5554';
@@ -67,38 +67,11 @@ test('locked profile never opens store selection when the home address differs',
     async wait(_: unknown, message: string) {
       return message === 'Приложение не загрузилось' ? [{ text: 'Главная' }] : [{ text: 'Чужой город, Улица,1', bounds: [0, 100, 100, 200] }];
     }
-  }, false, false, { POBEDA_LOCK_ADDRESS: '1' });
+  }, false, true);
   assert.equal(taps, 0);
+  assert.equal(result.apkChecks, 0);
   assert.equal(result.metrics.filter((event) => event.type === 'store-error').length, 2);
   assert.equal(result.code, 1);
-});
-
-test('installed ADBKeyboard does not require APK; absent keyboard reports missing APK without restart', async () => {
-  for (const installed of [true, false]) {
-    let installs = 0;
-    const result = await run(class {
-      serial = 'emulator-5554';
-      async start() {}
-      async command(...args: string[]) {
-        if (args[0] === 'install') installs++;
-        if (args.includes('enable')) throw new Error('ADBKeyboard ready');
-        if (args.includes('list')) return Buffer.from(installed ? 'com.android.adbkeyboard/.AdbIME' : '');
-        return Buffer.from(args.at(-1) === 'name' ? 'template' : '');
-      }
-      async click() {}
-      async tap() {}
-      flatten(nodes: any[]) { return nodes; }
-      async wait(_: unknown, message: string) {
-        if (message === 'Приложение не загрузилось') return [{ text: 'Главная' }];
-        return [{ text: 'Другой город, Другая,1', bounds: [0, 100, 100, 200] }];
-      }
-      async ui() { return [{ className: 'android.widget.EditText' }]; }
-    }, false, true);
-    assert.equal(installs, 0);
-    assert.equal(result.apkChecks, installed ? 0 : 1);
-    assert.match(result.metrics.find((event) => event.type === 'fatal-error').message, installed ? /ADBKeyboard ready/ : /отсутствует adb-keyboard.apk/);
-    assert.ok(!result.metrics.some((event) => event.type === 'emulator-restart'));
-  }
 });
 
 test('three store selection failures skip only that address and the next one is collected', async () => {
