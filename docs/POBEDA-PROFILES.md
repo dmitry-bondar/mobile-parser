@@ -12,7 +12,13 @@ npm run check
 npm test
 ```
 
-Установите SDK, API35 Play Store x86_64 и создайте базовый AVD по [SETUP.md](SETUP.md).
+Для автоматической установки зависимостей выполните из PowerShell администратора:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup-windows.ps1
+```
+
+При запросе перезагрузки перезагрузите Windows и повторите команду. Скрипт установит SDK и API35 Play Store x86_64. Базовый AVD создайте по [SETUP.md](SETUP.md).
 Проверка emulator.exe -accel-check должна показывать usable и код 0.
 При необходимости включите виртуализацию в BIOS и компонент Windows Hypervisor Platform, затем перезагрузитесь.
 [Официальная инструкция ускорения](https://developer.android.com/studio/run/emulator-acceleration).

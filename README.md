@@ -18,6 +18,14 @@ SDK и AVD не входят в Git. На новом компьютере сна
 
 ## Запуск
 
+Установка зависимостей Windows одной командой из PowerShell администратора:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup-windows.ps1
+```
+
+Подробности, перезагрузка и оставшиеся ручные шаги — в [SETUP.md](docs/SETUP.md#автоматическая-установка).
+
 ```powershell
 npm ci
 npm run check
