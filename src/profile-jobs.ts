@@ -10,7 +10,7 @@ export function validateProfiles(configs: { avd?: string }[]) {
   }
 }
 
-export async function runQueue<T>(jobs: T[], count: number, run: (job: T, slot: number) => Promise<void>, stagger = 25000) {
+export async function runQueue<T>(jobs: T[], count: number, run: (job: T, slot: number) => Promise<void>, stagger = 180000) {
   let next = 0;
   await Promise.all(Array.from({ length: count }, async (_, index) => {
     if (index && stagger) await new Promise((done) => setTimeout(done, index * stagger));
