@@ -46,7 +46,7 @@ export class Android {
       const directory = process.env.RUN_OUTPUT_DIR || resolve('logs');
       mkdirSync(directory, { recursive: true });
       const log = resolve(directory, process.env.RUN_OUTPUT_DIR ? 'emulator.log' : `emulator-${this.serial}-${Date.now()}.log`);
-      const args = ['-avd', avd, '-port', this.serial.split('-')[1], '-no-snapshot', ...graphics, '-no-metrics'];
+      const args = ['-avd', avd, '-port', this.serial.split('-')[1], '-no-snapshot', ...graphics, '-no-metrics', '-crash-report-mode', 'disabled'];
       appendFileSync(log, `${new Date().toISOString()} Запуск: ${args.join(' ')}\n`);
       console.log(`Журнал эмулятора: ${log}`);
       const descriptor = openSync(log, 'a');
@@ -84,7 +84,7 @@ export class Android {
       } catch (error) { if (launchError) throw launchError; }
       await Promise.race([delay(1000), launchFailed]);
     }
-    throw new Error('Эмулятор не загрузился');
+    throw new EmulatorUnavailableError('Эмулятор не загрузился');
   }
 
   async ui(): Promise<UiNode[]> {

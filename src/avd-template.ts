@@ -26,6 +26,29 @@ export async function imageProperties(config: string) {
   return readFile(resolve('android-sdk', image, 'source.properties'), 'utf8');
 }
 
+export async function stopRuntime(name: string) {
+  if (!/^mp-run-[a-f0-9-]{36}$/.test(name)) throw new Error('Принудительно останавливать можно только временный mp-run-UUID');
+  const sdk = resolve('android-sdk/emulator').replaceAll("'", "''");
+  const { stdout } = await execute('powershell.exe', ['-NoProfile', '-Command', `
+    $ErrorActionPreference = 'Stop'
+    $pattern = '(?:-avd\\s+["]?|@|[\\\\/])${name}(?:["\\s]|\\.avd|$)'
+    $targets = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object {
+      $_.Name -match '^(qemu-system.*|emulator)\\.exe$' -and $_.CommandLine -match $pattern
+    })
+    foreach ($target in $targets) {
+      if (-not $target.ExecutablePath -or -not $target.ExecutablePath.StartsWith('${sdk}\\', [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Emulator executable is outside the project SDK; refusing to kill'
+      }
+      $current = Get-CimInstance Win32_Process -Filter "ProcessId=$($target.ProcessId)" -ErrorAction Stop
+      if (-not $current) { continue }
+      if ($current.CreationDate -ne $target.CreationDate) { throw 'Process identity changed' }
+      & taskkill.exe /PID $target.ProcessId /T /F
+      if ($LASTEXITCODE -ne 0 -and (Get-Process -Id $target.ProcessId -ErrorAction SilentlyContinue)) { throw 'Failed to stop runtime process tree' }
+    }
+  `], { windowsHide: true, timeout: 30000 });
+  if (stdout.trim()) console.log(stdout.trim());
+}
+
 export async function copyAvd(source: string, target: string, name: string) {
   if ((await lstat(source)).isSymbolicLink() || (await readdir(source, { recursive: true, withFileTypes: true })).some((entry) => entry.isSymbolicLink())) throw new Error('Ссылки/junction в шаблоне AVD запрещены');
   console.log(`Копирование AVD: ${basename(source)} → ${basename(target)}`);

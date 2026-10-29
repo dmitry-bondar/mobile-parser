@@ -1,4 +1,4 @@
-import { appendFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -8,9 +8,10 @@ import { avdPath } from '../src/avd-template.js';
 import { finishProgress, updateProgress, type WorkerProgress } from '../src/worker-progress.js';
 import { runQueue, validateProfiles } from '../src/profile-jobs.js';
 
-const { positionals, values } = parseArgs({ allowPositionals: true, options: { gpu: { type: 'string' }, 'no-vulkan': { type: 'boolean' }, profiles: { type: 'boolean' }, prepare: { type: 'boolean' }, limit: { type: 'string' } } });
+const { positionals, values } = parseArgs({ allowPositionals: true, options: { gpu: { type: 'string' }, 'no-vulkan': { type: 'boolean' }, profiles: { type: 'boolean' }, prepare: { type: 'boolean' }, limit: { type: 'string' }, resume: { type: 'string' } } });
 const profiles = !!values.profiles;
 if (values.prepare && !profiles) throw new Error('--prepare используется только с --profiles');
+if (values.resume && (!profiles || values.prepare)) throw new Error('--resume используется только для сбора --profiles');
 if (positionals.length > (profiles ? 1 : 2)) throw new Error('Неверные аргументы запуска');
 const template = profiles ? 'профили из конфига' : positionals[0] || 'android-v1';
 const countArgument = profiles ? positionals[0] || '2' : positionals[1] || '4';
@@ -26,6 +27,24 @@ if (values.limit) {
   if (!profiles || !Number.isInteger(limit) || limit < 1 || limit > configs.length) throw new Error('--limit: число первых адресов, только для режима профилей');
   configs = configs.slice(0, limit);
 }
+if (values.resume) {
+  const previous = resolve(values.resume, 'status.json');
+  const report = JSON.parse(readFileSync(previous, 'utf8'));
+  if (!report.profiles || report.prepare || !Array.isArray(report.workers)) throw new Error('Нужен отчёт профильного сбора, не подготовки');
+  const snapshot = JSON.parse(readFileSync(resolve(values.resume, 'config.snapshot.json'), 'utf8'));
+  configs = configs.filter((config: { avd: string; address: string; categories: string[] }) => {
+    const old = snapshot.find((item: typeof config) => item.avd === config.avd && item.address === config.address);
+    const done = report.workers.find((job: WorkerProgress) => job.profile === config.avd && job.status === 'Готово' && job.addresses.length === 1 && job.addresses[0].address === config.address && job.addresses[0].status === 'Готово');
+    if (!old || JSON.stringify(old.categories) !== JSON.stringify(config.categories) || !done?.directory) return true;
+    try {
+      const products = JSON.parse(readFileSync(resolve(done.directory, 'products.json'), 'utf8'));
+      if (!Array.isArray(products)) return true;
+    } catch { return true; }
+    console.log(`Уже собрано, пропускаем: ${config.avd} / ${config.address}. Результаты: ${done.directory}`);
+    return false;
+  });
+  if (!configs.length) { console.log('Все выбранные адреса уже успешно собраны.'); process.exit(0); }
+}
 if (profiles) {
   validateProfiles(configs);
   for (const config of configs) {
@@ -33,7 +52,7 @@ if (profiles) {
     readFileSync(resolve('android-avd', `${config.avd}.ini`));
   }
 }
-if (!Number.isInteger(count) || count < 1 || count > Math.min(16, configs.length)) throw new Error('Неверное число потоков (1..16, не больше числа адресов)');
+if (!Number.isInteger(count) || count < 1 || count > 16 || !profiles && count > configs.length) throw new Error('Неверное число потоков (1..16, для общего шаблона не больше числа адресов)');
 const directory = resolve('outputs/pobeda', `parallel-${new Date().toISOString().replace(/[:.]/g, '-')}-${randomUUID().slice(0, 8)}`);
 mkdirSync(directory, { recursive: true });
 writeFileSync(resolve(directory, 'config.snapshot.json'), JSON.stringify(configs, null, 2));
@@ -44,7 +63,7 @@ const workers: WorkerProgress[] = Array.from({ length: profiles ? configs.length
 }));
 
 function save() {
-  writeFileSync(resolve(directory, 'status.json.tmp'), JSON.stringify({ template, profiles, prepare: !!values.prepare, gpu, noVulkan, workers }, null, 2));
+  writeFileSync(resolve(directory, 'status.json.tmp'), JSON.stringify({ template, profiles, prepare: !!values.prepare, resumedFrom: values.resume ? resolve(values.resume) : undefined, gpu, noVulkan, workers }, null, 2));
   renameSync(resolve(directory, 'status.json.tmp'), resolve(directory, 'status.json'));
 }
 
@@ -71,7 +90,7 @@ const stop = () => {
 };
 process.on('SIGINT', stop);
 try {
-  await runQueue(workers, count, async (worker, slot) => {
+  await runQueue(workers, Math.min(count, workers.length), async (worker, slot) => {
     if (stopping) { finishProgress(worker, null, 'Запуск отменён'); save(); return; }
     worker.status = 'Подготовка';
     worker.started = new Date().toISOString();
@@ -91,6 +110,10 @@ try {
         if (!message || typeof message !== 'object') return;
         const event = message as Record<string, unknown>;
         updateProgress(worker, event);
+        if (event.cleanupBlocked && !stopping) {
+          console.error('Очистка AVD не подтверждена. Новые задания остановлены, чтобы не накапливать процессы.');
+          stop();
+        }
         if (stopping && event.type === 'worker-ready') writeFileSync(resolve(worker.directory, 'stop.requested'), '');
         appendFileSync(resolve(directory, 'progress.jsonl'), JSON.stringify({ time: new Date().toISOString(), worker: worker.worker, ...event }) + '\n');
         save();
@@ -98,6 +121,10 @@ try {
       });
       child.once('error', (error) => { spawnError = error.message; });
       child.once('close', (code) => {
+        if (existsSync(resolve('android-avd', `.port-emulator-${5554 + 2 * (slot - 1)}.lock`)) && !stopping) {
+          console.error('Блокировка порта не освобождена. Запуск новых заданий остановлен.');
+          stop();
+        }
         finishProgress(worker, code, spawnError || (code !== 0 && !worker.error ? stderr.trim() : ''));
         save();
         show();

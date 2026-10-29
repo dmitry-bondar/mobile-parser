@@ -2,7 +2,7 @@ import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { resolve, relative } from 'node:path';
 import { Android, avdName, delay, EmulatorUnavailableError, type UiNode } from '../../android.js';
-import { assertStopped } from '../../avd-template.js';
+import { assertStopped, stopRuntime } from '../../avd-template.js';
 import { createLogger } from '../../logger.js';
 import { matchesAddress, parseAddress } from './address.js';
 import { recordMetric } from '../../metrics.js';
@@ -233,6 +233,12 @@ try {
         let stopped = false;
         for (let wait = 0; wait < 30; wait++) {
           try { await assertStopped(avdName); stopped = true; break; } catch { await delay(1000); }
+        }
+        if (!stopped && /^mp-run-[a-f0-9-]{36}$/.test(avdName)) {
+          await stopRuntime(avdName);
+          for (let wait = 0; wait < 10; wait++) {
+            try { await assertStopped(avdName); stopped = true; break; } catch { await delay(1000); }
+          }
         }
         if (!stopped) throw new Error('Не подтверждена остановка эмулятора; безопасный перезапуск отменён');
         await delay(3000);

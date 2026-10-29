@@ -61,5 +61,7 @@ for (const failure of ['exit', 'error', 'none']) test(`emulator startup logs out
   assert.ok(descriptorClosed);
   assert.ok(argumentsUsed.includes('swiftshader'));
   assert.ok(argumentsUsed.includes('-Vulkan'));
+  assert.ok(argumentsUsed.includes('-crash-report-mode'));
+  assert.ok(argumentsUsed.includes('disabled'));
   assert.ok(journal.includes('Запуск:'));
 });

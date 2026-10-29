@@ -3,7 +3,7 @@ import { createReadStream } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import { spawn } from 'node:child_process';
-import { avdPath, assertStopped, copyAvd, execute, imageProperties, registerAvd, removeRuntime, validateArchive } from '../src/avd-template.js';
+import { avdPath, assertStopped, stopRuntime, copyAvd, execute, imageProperties, registerAvd, removeRuntime, validateArchive } from '../src/avd-template.js';
 import { runAdb } from '../src/adb.js';
 import { delay } from '../src/android.js';
 
@@ -49,6 +49,7 @@ if (mode === 'clone') {
   let copied = false;
   let launched = false;
   let profileLock: FileHandle | undefined;
+  let cleanupBlocked = false;
   try {
     if (preparing || process.env.POBEDA_PROFILE_JOB === '1') profileLock = await open(resolve('android-avd', `.profile-${name}.lock`), 'wx');
     const devices = (await runAdb(['devices'])).stdout.toString();
@@ -88,6 +89,13 @@ if (mode === 'clone') {
         for (let i = 0; i < 30; i++) {
           try { await assertStopped(runtime); stopped = true; break; } catch { await delay(1000); }
         }
+        if (!stopped && copied) {
+          console.error(`Штатная остановка ${runtime} не завершилась; останавливаем только процессы этой временной копии`);
+          await stopRuntime(runtime);
+          for (let i = 0; i < 10; i++) {
+            try { await assertStopped(runtime); stopped = true; break; } catch { await delay(1000); }
+          }
+        }
         if (!stopped) throw new Error(`Копия ${runtime} оставлена: остановка не подтверждена`);
         if (copied) {
           await removeRuntime(runtime);
@@ -95,13 +103,17 @@ if (mode === 'clone') {
         } else console.log(`Постоянный профиль ${name} выключен и сохранён`);
       }
     } catch (error) {
+      cleanupBlocked = true;
       console.error(error);
-      if (process.connected) process.send?.({ type: 'worker-error', message: error instanceof Error ? error.message : String(error) }, () => {});
+      if (process.connected) process.send?.({ type: 'worker-error', cleanupBlocked: true, message: error instanceof Error ? error.message : String(error) }, () => {});
       process.exitCode = 1;
     }
     await portLock.close();
-    await unlink(resolve('android-avd', `.port-${serial}.lock`));
-    if (profileLock) { await profileLock.close(); await unlink(resolve('android-avd', `.profile-${name}.lock`)); }
+    if (!cleanupBlocked) await unlink(resolve('android-avd', `.port-${serial}.lock`));
+    if (profileLock) {
+      await profileLock.close();
+      if (!cleanupBlocked) await unlink(resolve('android-avd', `.profile-${name}.lock`));
+    }
   }
 } else {
   const archive = resolve(argument);
