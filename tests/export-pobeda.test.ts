@@ -16,13 +16,13 @@ test('export follows resume reports, preserves screenshot links and reports empt
     const two = resolve(root, 'outputs/pobeda/mp-run-two');
     const empty = resolve(root, 'outputs/pobeda/mp-run-empty');
     for (const path of [previous, latest, empty, resolve(one, 'store-1'), resolve(two, 'store-1')]) await mkdir(path, { recursive: true });
-    for (const [directory, address] of [[one, 'Первый'], [two, 'Второй']]) {
+    for (const [directory, address] of [[one, 'Медынь, Молодежная,2 А'], [two, 'Второй']]) {
       await writeFile(resolve(directory, 'store-1/page.png'), address);
       await writeFile(resolve(directory, 'products.json'), JSON.stringify([{ name: 'Товар', address, screenshot: 'store-1/page.png' }]));
     }
     await writeFile(resolve(empty, 'products.json'), '[]');
     const job = (profile: string, directory: string, address: string, status = 'Готово') => ({ profile, directory, ended: 'done', addresses: [{ address, status }] });
-    await writeFile(resolve(previous, 'status.json'), JSON.stringify({ profiles: true, workers: [job('p1', one, 'Первый'), job('p2', empty, 'Второй', 'Ошибка')] }));
+    await writeFile(resolve(previous, 'status.json'), JSON.stringify({ profiles: true, workers: [job('p1', one, 'Медынь, Молодежная, 2А'), job('p2', empty, 'Второй', 'Ошибка')] }));
     const report = { profiles: true, resumedFrom: previous, workers: [job('p2', two, 'Второй'), job('p3', empty, 'Пустой', 'Ошибка')] };
     await writeFile(resolve(latest, 'status.json'), JSON.stringify(report));
     const run = () => promisify(execFile)(process.execPath, ['--import', pathToFileURL(resolve('node_modules/tsx/dist/loader.mjs')).href, resolve('scripts/export-pobeda.ts')], { cwd: root, windowsHide: true })
@@ -33,13 +33,13 @@ test('export follows resume reports, preserves screenshot links and reports empt
     assert.ok(output, result.stderr);
     const products = JSON.parse(await readFile(resolve(output, 'products.json'), 'utf8'));
     assert.equal(products.length, 2);
-    assert.deepEqual(new Set(products.map((item: any) => item.address)), new Set(['Первый', 'Второй']));
+    assert.deepEqual(new Set(products.map((item: any) => item.address)), new Set(['Медынь, Молодежная,2 А', 'Второй']));
     for (const item of products) assert.equal(await readFile(resolve(output, item.screenshot), 'utf8'), item.address);
     assert.notEqual(products[0].screenshot, products[1].screenshot);
     const summary = JSON.parse(await readFile(resolve(output, 'summary.json'), 'utf8'));
     assert.equal(summary.addresses.find((item: any) => item.address === 'Пустой').products, 0);
     assert.deepEqual(summary.reports, [await realpath(latest), await realpath(previous)]);
-    assert.equal(await readFile(resolve(one, 'store-1/page.png'), 'utf8'), 'Первый');
+    assert.equal(await readFile(resolve(one, 'store-1/page.png'), 'utf8'), 'Медынь, Молодежная,2 А');
 
     await writeFile(resolve(two, 'products.json'), JSON.stringify([{ name: 'Нет PNG', address: 'Второй', screenshot: '../outside.png' }]));
     const missing = await run();

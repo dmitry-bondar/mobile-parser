@@ -1,6 +1,7 @@
 import { copyFile, mkdir, readFile, readdir, realpath, writeFile } from 'node:fs/promises';
 import { isAbsolute, relative, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { matchesAddress } from '../src/extractors/pobeda/address.js';
 
 const root = resolve('outputs/pobeda');
 let run = process.argv[2] ? resolve(process.argv[2]) : '';
@@ -37,7 +38,8 @@ for (const [index, job] of [...jobs.values()].entries()) {
     try {
       const parsed = JSON.parse(await readFile(resolve(job.directory, name), 'utf8'));
       if (!Array.isArray(parsed)) throw new Error('Ожидался массив товаров');
-      items = parsed.filter((item) => item.address === job.address);
+      items = parsed.filter((item) => item.address === job.address || matchesAddress(item.address, job.address));
+      if (parsed.length && items.length !== parsed.length) errors.push(`${name}: ${parsed.length - items.length} товаров с другим адресом; ожидается ${job.address}. Адреса в файле: ${[...new Set(parsed.map((item) => item.address))].join('; ')}`);
       if (items.length) { sourceFile = name; break; }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') errors.push(`${name}: ${String(error)}`);
