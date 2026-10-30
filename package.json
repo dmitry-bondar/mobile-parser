@@ -13,6 +13,7 @@
     "pobeda:parallel": "tsx scripts/pobeda-parallel.ts",
     "pobeda:profiles": "tsx scripts/pobeda-parallel.ts --profiles",
     "pobeda:profiles:prepare": "tsx scripts/pobeda-parallel.ts --profiles --prepare",
+    "pobeda:export": "tsx scripts/export-pobeda.ts",
     "screenshot": "tsx src/screenshot.ts",
     "pobeda": "tsx src/extractors/pobeda/index.ts"
   },
