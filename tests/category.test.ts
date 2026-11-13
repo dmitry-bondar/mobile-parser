@@ -8,7 +8,7 @@ const source = await readFile(new URL('../src/extractors/pobeda/index.ts', impor
 const navigation = source.slice(source.indexOf('async function category('), source.indexOf('async function collect('));
 const createCategory = new Function('android', 'recordMetric', ts.transpileModule(navigation, {}).outputText + '; return category;');
 const extract = source.slice(source.indexOf('async function extractCategory('), source.indexOf('\ntry {'));
-const createExtract = new Function('android', 'logger', 'category', 'collect', 'categoryError', 'returnToCategory', ts.transpileModule(extract, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText + '; return extractCategory;');
+const createExtract = new Function('android', 'logger', 'category', 'collect', 'categoryError', 'returnToCategory', 'const completedCategories = new Set(); ' + ts.transpileModule(extract, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText + '; return extractCategory;');
 
 test('empty screen without search or sorting is a valid leaf category', async () => {
   const nodes = [{ text: 'Напитки', bounds: [] }, { text: 'К сожалению, здесь пока пусто. Скоро добавим товары!', bounds: [] }];
@@ -17,6 +17,32 @@ test('empty screen without search or sorting is a valid leaf category', async ()
     () => assert.fail('No child categories'), async (path: string) => paths.push(path), () => assert.fail('No category error'), () => {});
   await run('Кулинария/Напитки', 'Адрес', 'store-1');
   assert.deepEqual(paths, ['Кулинария/Напитки']);
+});
+
+test('completed leaves are not collected again after an interrupted parent is retried', async () => {
+  let screen = 'Мясо';
+  let failed = false;
+  const counts = new Map<string, number>();
+  const parent = [
+    { text: 'Мясо', bounds: [0, 0, 100, 100], children: [] },
+    { text: 'Каталог', bounds: [0, 1000, 100, 1100], children: [] },
+    ...['Первая', 'Вторая'].map((text) => ({ text: '', clickable: true, bounds: [0, 100, 100, 400], children: [{ text, bounds: [0, 100, 100, 200] }] })),
+  ];
+  const run = createExtract({
+    ui: async () => parent,
+    flatten: (nodes: any[] = []): any[] => nodes.flatMap((n) => [n, ...(n.children || [])]),
+    wait: async () => screen === 'Мясо' ? parent : [{ text: screen, className: 'android.widget.EditText', bounds: [] }],
+    command: async () => {},
+  }, { info: () => {} }, async (child: string) => { screen = child; },
+  async (path: string) => {
+    counts.set(path, (counts.get(path) || 0) + 1);
+    if (screen === 'Вторая' && !failed) { failed = true; throw new Error('App closed'); }
+  }, async (_: string, error: Error) => { throw error; }, async () => { screen = 'Мясо'; });
+  await assert.rejects(run('Мясо', 'Адрес', 'attempt-1'), /App closed/);
+  screen = 'Мясо';
+  await run('Мясо', 'Адрес', 'attempt-2');
+  assert.equal(counts.get('Мясо/Первая'), 1);
+  assert.equal(counts.get('Мясо/Вторая'), 2);
 });
 
 test('failed child is logged and the next child is collected after recovery', async () => {

@@ -8,31 +8,56 @@ import { EmulatorUnavailableError } from '../src/android.js';
 const source = await readFile(new URL('../src/extractors/pobeda/index.ts', import.meta.url), 'utf8');
 const body = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText.replace(/^import .*$/gm, '').replaceAll('import.meta.url', JSON.stringify(import.meta.url));
 const execute = new (Object.getPrototypeOf(async function () {}).constructor)(
-  'Android', 'avdName', 'delay', 'EmulatorUnavailableError', 'assertStopped', 'access', 'readFile', 'mkdir', 'writeFile', 'existsSync', 'resolve', 'relative', 'createLogger', 'matchesAddress', 'parseAddress', 'recordMetric', 'process', body);
+  'Android', 'avdName', 'delay', 'EmulatorUnavailableError', 'assertStopped', 'access', 'readFile', 'mkdir', 'writeFile', 'existsSync', 'resolve', 'relative', 'createLogger', 'matchesAddress', 'parseAddress', 'recordMetric', 'process', 'stopRuntime', 'avdPath', 'copyAvd', 'registerAvd', 'removeRuntime', body);
 
-async function run(Android: any, stopped = false, apkMissing = false, env = {}) {
+async function run(Android: any, stopped = false, apkMissing = false, env = {}, runtime = 'template') {
   const metrics: any[] = [];
   const directories: string[] = [];
   const writes: string[] = [];
   const process = { env, exitCode: 0 };
   let apkChecks = 0;
-  await execute(Android, 'template', async () => {}, EmulatorUnavailableError, async () => {}, async () => { apkChecks++; if (apkMissing) throw new Error('ENOENT'); },
+  const copies: string[] = [];
+  await execute(Android, runtime, async () => {}, EmulatorUnavailableError, async () => {}, async () => { apkChecks++; if (apkMissing) throw new Error('ENOENT'); },
     async () => JSON.stringify([{ address: 'Медынь, Молодежная,2А', categories: 'POBEDA_PREPARE_ONLY' in env ? ['Мясо'] : [] }, { address: 'Рязань, Спортивная,1', categories: [] }]),
     async (path: string) => { directories.push(path); }, async (path: string) => { writes.push(path); }, () => stopped,
     resolve, relative, () => ({ info: () => {}, error: () => {} }), (a: string, b: string) => a === b, () => ({ query: 'улица' }),
-    (type: string, details: any) => metrics.push({ type, ...details }), process);
-  return { metrics, directories, writes, apkChecks, code: process.exitCode };
+    (type: string, details: any) => metrics.push({ type, ...details }), process,
+    async () => {}, (name: string) => name, async (source: string, target: string) => copies.push(`copy:${source}:${target}`),
+    async (name: string) => copies.push(`register:${name}`), async (name: string) => copies.push(`remove:${name}`));
+  return { metrics, directories, writes, apkChecks, copies, code: process.exitCode };
 }
 
-test('crashed emulator restarts at most twice, retaining partial products', async () => {
+test('unavailable runtime is removed and freshly cloned from the persistent profile', async () => {
+  const runtime = 'mp-run-11111111-1111-1111-1111-111111111111';
+  let starts = 0;
+  let homes = 0;
+  const result = await run(class {
+    serial = 'emulator-5554';
+    async start() { if (++starts === 1) throw new EmulatorUnavailableError('Boot failed'); }
+    async command(...args: string[]) { return Buffer.from(args.at(-1) === 'name' ? runtime : ''); }
+    async click() { homes++; }
+    flatten(nodes: any[]) { return nodes; }
+    async wait(_: unknown, message: string) {
+      if (message === 'Приложение не загрузилось') return [{ text: 'Главная' }];
+      return [{ text: homes === 1 ? 'Медынь, Молодежная,2А' : 'Рязань, Спортивная,1', bounds: [0, 100, 100, 200] }];
+    }
+  }, false, false, { ANDROID_TEMPLATE: 'persistent-profile' }, runtime);
+  assert.equal(result.code, 0);
+  assert.deepEqual(result.copies, [`remove:${runtime}`, `copy:persistent-profile:${runtime}`, `register:${runtime}`]);
+  assert.equal(starts, 2);
+  assert.ok(result.writes.some((file) => /errors[\\/]error-1\.png$/.test(file)));
+  assert.ok(result.metrics.some((event) => event.type === 'error-screenshot' && event.file === 'errors/error-1.png'), JSON.stringify(result.metrics));
+});
+
+test('crashed emulator restarts at most three times, retaining partial products', async () => {
   let starts = 0;
   const result = await run(class {
     serial = 'emulator-5554';
     async start() { starts++; throw new EmulatorUnavailableError('native crash'); }
     async command(...args: string[]) { return Buffer.from(args.at(-1) === 'name' ? 'template' : ''); }
   });
-  assert.equal(starts, 3);
-  assert.equal(result.metrics.filter((event) => event.type === 'emulator-restart').length, 2);
+  assert.equal(starts, 4);
+  assert.equal(result.metrics.filter((event) => event.type === 'emulator-restart').length, 3);
   assert.ok(result.writes.some((path) => path.endsWith('products.partial.json')));
   assert.equal(result.code, 1);
 });

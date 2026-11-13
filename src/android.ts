@@ -25,7 +25,7 @@ export class Android {
       return result;
     } catch (error) {
       if (!control && this.emulatorFailure) throw this.emulatorFailure;
-      if (!control && /device (?:offline|['"]?emulator-\d+['"]? not found)|no devices\/emulators found|error: closed|transport error/i.test(String(error))) {
+      if (!control && ((error as { killed?: boolean }).killed || /device (?:offline|['"]?emulator-\d+['"]? not found)|no devices\/emulators found|error: closed|transport error|could not connect to TCP port|ETIMEDOUT/i.test(String(error)))) {
         throw new EmulatorUnavailableError(`Потеряна связь с ${this.serial}: ${String(error)}`);
       }
       throw error;

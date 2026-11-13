@@ -8,7 +8,7 @@ import { avdPath } from '../src/avd-template.js';
 
 const source = await readFile(new URL('../scripts/avd.ts', import.meta.url), 'utf8');
 const body = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText.replace(/^import .*$/gm, '');
-const execute = new (Object.getPrototypeOf(async function () {}).constructor)('deps', `const {mkdir,mkdtemp,readFile,writeFile,rename,open,access,unlink,createReadStream,createHash,randomUUID,resolve,spawn,avdPath,assertStopped,stopRuntime,copyAvd,execute,imageProperties,registerAvd,removeRuntime,validateArchive,runAdb,delay,process,console}=deps; ${body}`);
+const execute = new (Object.getPrototypeOf(async function () {}).constructor)('deps', `const {mkdir,mkdtemp,readFile,writeFile,rename,open,access,unlink,createReadStream,createHash,randomUUID,resolve,spawn,avdPath,assertStopped,stopRuntime,copyAvd,execute,imageProperties,registerAvd,removeRuntime,validateArchive,runAdb,delay,process,console,reserveEmulatorPort}=deps; ${body}`);
 
 for (const [mode, hung] of [['prepare', ''], ['run', ''], ['run', 'recover'], ['run', 'blocked']]) test(`${mode}: one assigned profile, independent port and safe cleanup (${hung || 'normal'})`, async () => {
   const copied: string[] = [];
@@ -24,6 +24,7 @@ for (const [mode, hung] of [['prepare', ''], ['run', ''], ['run', 'recover'], ['
     process, console: { log: () => {}, error: () => {} }, resolve, avdPath, randomUUID: () => '11111111-1111-1111-1111-111111111111',
     mkdir: async () => {}, readFile: async () => JSON.stringify([{ address: 'Один адрес', categories: [] }]),
     writeFile: async () => {}, open: async () => ({ close: async () => {} }), unlink: async (path: string) => { unlinked.push(path); },
+    reserveEmulatorPort: async () => ({ serial: 'emulator-5556', path: resolve('android-avd/.port-emulator-5556.lock'), lock: { close: async () => {} } }),
     assertStopped: async (name: string) => { stopped.push(name); if (hung && name.startsWith('mp-run-') && !forced) throw new Error('Still running'); },
     stopRuntime: async (name: string) => {
       assert.ok(name.startsWith('mp-run-'));
@@ -42,6 +43,7 @@ for (const [mode, hung] of [['prepare', ''], ['run', ''], ['run', 'recover'], ['
   });
   assert.equal(process.exitCode, hung === 'blocked' ? 1 : 0);
   assert.equal(childEnv.ANDROID_SERIAL, 'emulator-5556');
+  assert.equal(childEnv.ANDROID_TEMPLATE, mode === 'prepare' ? '' : 'pobeda-store-02');
   assert.equal(childEnv.POBEDA_PREPARE_ONLY, mode === 'prepare' ? '1' : '0');
   assert.equal(childEnv.POBEDA_LOCK_ADDRESS, mode === 'prepare' ? '0' : '1');
   assert.equal(copied.length, mode === 'prepare' ? 0 : 1);

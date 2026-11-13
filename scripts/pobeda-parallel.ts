@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -20,7 +20,7 @@ const noVulkan = values['no-vulkan'] || process.env.ANDROID_EMULATOR_NO_VULKAN =
 graphicsArguments(gpu, noVulkan);
 const count = Number(countArgument);
 const port = Number(values.port || '5554');
-if (!Number.isInteger(port) || port < 5554 || port % 2 || port + 2 * (count - 1) > 5584) throw new Error('--port: чётный начальный порт 5554..5584; все потоки должны помещаться в диапазон');
+if (!Number.isInteger(port) || port < 5554 || port > 5584 || port % 2) throw new Error('--port: чётный предпочтительный порт 5554..5584');
 if (!profiles) avdPath(template);
 let configs = JSON.parse(readFileSync(process.env.POBEDA_CONFIG || 'src/extractors/pobeda/config.json', 'utf8'));
 if (!Array.isArray(configs) || !configs.length || configs.some((config) => typeof config.address !== 'string' || !Array.isArray(config.categories))) throw new Error('Некорректный конфиг адресов');
@@ -76,6 +76,7 @@ function show() {
   console.log(`GPU: ${gpu}; Vulkan: ${noVulkan ? 'отключён' : 'по умолчанию'}`);
   console.table(workers.map((worker) => ({
     'Задание': worker.worker, 'Профиль': worker.profile || template, 'Статус': worker.status,
+    'Устройство': worker.serial || '',
     'Адреса': `${worker.addresses.filter((item) => ['Готово', 'Частично'].includes(item.status)).length}/${worker.addresses.length}`,
     'Текущий адрес': worker.current, 'Категория': worker.category, 'Последняя ошибка': worker.error.slice(0, 120),
   })));
@@ -102,15 +103,19 @@ try {
     await new Promise<void>((done) => {
       const child = spawn(process.execPath, ['--import', 'tsx', 'scripts/avd.ts', values.prepare ? 'prepare' : 'run', worker.profile || template, profiles ? '1' : String(worker.worker), profiles ? '1' : String(count)], {
         stdio: ['ignore', 'pipe', 'pipe', 'ipc'], windowsHide: true, detached: process.platform === 'win32',
-        env: { ...process.env, POBEDA_CONFIG: configPath, AVD_SLOT: String((port - 5554) / 2 + slot), POBEDA_PROFILE_JOB: profiles ? '1' : '0', POBEDA_LOCK_ADDRESS: profiles && !values.prepare ? '1' : '0', ANDROID_EMULATOR_GPU: gpu, ANDROID_EMULATOR_NO_VULKAN: noVulkan ? '1' : '0' },
+        env: { ...process.env, POBEDA_CONFIG: configPath, AVD_SLOT: String(((port - 5554) / 2 + slot - 1) % 16 + 1), POBEDA_PROFILE_JOB: profiles ? '1' : '0', POBEDA_LOCK_ADDRESS: profiles && !values.prepare ? '1' : '0', ANDROID_EMULATOR_GPU: gpu, ANDROID_EMULATOR_NO_VULKAN: noVulkan ? '1' : '0' },
       });
       let stderr = '';
       let spawnError = '';
+      let serial = '';
+      let portReleased = false;
       child.stdout!.on('data', (chunk) => appendFileSync(resolve(directory, `worker-${worker.worker}.log`), chunk));
       child.stderr!.on('data', (chunk) => { stderr = (stderr + chunk.toString()).slice(-4000); appendFileSync(resolve(directory, `worker-${worker.worker}.log`), chunk); });
       child.on('message', (message) => {
         if (!message || typeof message !== 'object') return;
         const event = message as Record<string, unknown>;
+        if (event.type === 'worker-port') serial = String(event.serial);
+        if (event.type === 'worker-port-released') portReleased = true;
         updateProgress(worker, event);
         if (event.cleanupBlocked && !stopping) {
           console.error('Очистка AVD не подтверждена. Новые задания остановлены, чтобы не накапливать процессы.');
@@ -123,7 +128,7 @@ try {
       });
       child.once('error', (error) => { spawnError = error.message; });
       child.once('close', (code) => {
-        if (existsSync(resolve('android-avd', `.port-emulator-${port + 2 * (slot - 1)}.lock`)) && !stopping) {
+        if (serial && !portReleased && !stopping) {
           console.error('Блокировка порта не освобождена. Запуск новых заданий остановлен.');
           stop();
         }

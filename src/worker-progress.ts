@@ -1,6 +1,7 @@
 export type WorkerProgress = {
   worker: number;
   profile?: string;
+  serial?: string;
   status: string;
   directory: string;
   current: string;
@@ -15,6 +16,7 @@ export type WorkerProgress = {
 export function updateProgress(worker: WorkerProgress, event: Record<string, unknown>) {
   const current = worker.addresses.find((item) => item.address === worker.current);
   switch (event.type) {
+    case 'worker-port': worker.serial = String(event.serial); break;
     case 'worker-ready': worker.directory = String(event.directory); worker.status = 'Копирование AVD'; break;
     case 'run-start': worker.status = 'Загрузка Android'; break;
     case 'app-ready': worker.status = 'Работает'; break;
@@ -51,7 +53,7 @@ export function updateProgress(worker: WorkerProgress, event: Record<string, unk
       break;
     }
     case 'emulator-restart':
-      worker.status = `Перезапуск ${event.attempt}/2`;
+      worker.status = `Перезапуск ${event.attempt}/3`;
       worker.current = String(event.address);
       worker.category = '';
       worker.error = String(event.message);

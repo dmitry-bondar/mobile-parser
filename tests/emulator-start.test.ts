@@ -22,7 +22,7 @@ test('GPU choices are explicit and Vulkan disabling is independent', () => {
 });
 
 test('lost device is recoverable but missing APK and installation errors are not', async () => {
-  for (const [message, retryable] of [['error: device offline', true], ["error: device 'emulator-5554' not found", true], ['failed to stat adb-keyboard.apk: No such file', false], ['INSTALL_FAILED_INVALID_APK', false]] as const) {
+  for (const [message, retryable] of [['error: device offline', true], ["error: device 'emulator-5554' not found", true], ['could not connect to TCP port 5554', true], ['ETIMEDOUT', true], ['failed to stat adb-keyboard.apk: No such file', false], ['INSTALL_FAILED_INVALID_APK', false]] as const) {
     const android = createCommand(async () => { throw new Error(message); }, EmulatorUnavailableError, () => {});
     await assert.rejects(android.command('shell', 'getprop'), (error: unknown) => (error instanceof EmulatorUnavailableError) === retryable);
   }

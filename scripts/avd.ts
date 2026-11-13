@@ -6,6 +6,7 @@ import { spawn } from 'node:child_process';
 import { avdPath, assertStopped, stopRuntime, copyAvd, execute, imageProperties, registerAvd, removeRuntime, validateArchive } from '../src/avd-template.js';
 import { runAdb } from '../src/adb.js';
 import { delay } from '../src/android.js';
+import { reserveEmulatorPort } from '../src/emulator-port.js';
 
 async function sha256(path: string) {
   const hash = createHash('sha256');
@@ -40,8 +41,11 @@ if (mode === 'clone') {
   if (preparing && configs.length !== 1) throw new Error('Подготовка профиля требует ровно один адрес');
   const slot = Number(process.env.AVD_SLOT || worker);
   if (!Number.isInteger(slot) || slot < 1 || slot > 16) throw new Error('AVD_SLOT должен быть от 1 до 16');
-  const serial = `emulator-${5554 + 2 * (slot - 1)}`;
-  const portLock = await open(resolve('android-avd', `.port-${serial}.lock`), 'wx');
+  const devices = (await runAdb(['devices'])).stdout.toString();
+  const reserved = await reserveEmulatorPort(5554 + 2 * (slot - 1), devices);
+  const { serial, lock: portLock } = reserved;
+  console.log(`Зарезервирован свободный порт: ${serial}`);
+  if (process.connected) process.send?.({ type: 'worker-port', serial }, () => {});
   const id = randomUUID();
   const runtime = preparing ? name : `mp-run-${id}`;
   const directory = resolve('outputs/pobeda', preparing ? `prepare-${id}` : runtime);
@@ -52,13 +56,11 @@ if (mode === 'clone') {
   let cleanupBlocked = false;
   try {
     if (preparing || process.env.POBEDA_PROFILE_JOB === '1') profileLock = await open(resolve('android-avd', `.profile-${name}.lock`), 'wx');
-    const devices = (await runAdb(['devices'])).stdout.toString();
-    if (devices.split(/\r?\n/).some((line) => line.startsWith(serial + '\t'))) throw new Error(`${serial} уже занят`);
     await assertStopped(name);
     await imageProperties(await readFile(resolve(avdPath(name), 'config.ini'), 'utf8'));
     await mkdir(directory, { recursive: true });
     await writeFile(resolve(directory, 'config.snapshot.json'), JSON.stringify(configs.filter((_: unknown, index: number) => index % workers === worker - 1), null, 2));
-    if (process.connected) process.send?.({ type: 'worker-ready', directory, runtime }, () => {});
+    if (process.connected) process.send?.({ type: 'worker-ready', directory, runtime, serial }, () => {});
     if (!preparing) {
       await copyAvd(avdPath(name), target, runtime);
       copied = true;
@@ -69,7 +71,7 @@ if (mode === 'clone') {
     process.exitCode = await new Promise<number>((done, reject) => {
       const child = spawn(process.execPath, ['--import', 'tsx', 'src/extractors/pobeda/index.ts'], {
         stdio: ['inherit', 'inherit', 'inherit', 'ipc'], windowsHide: true,
-        env: { ...process.env, ANDROID_AVD: runtime, ANDROID_SERIAL: serial, POBEDA_CONFIG: resolve(directory, 'config.snapshot.json'), RUN_OUTPUT_DIR: directory, POBEDA_PREPARE_ONLY: preparing ? '1' : '0', POBEDA_LOCK_ADDRESS: preparing ? '0' : process.env.POBEDA_LOCK_ADDRESS },
+        env: { ...process.env, ANDROID_AVD: runtime, ANDROID_SERIAL: serial, ANDROID_TEMPLATE: preparing ? '' : name, POBEDA_CONFIG: resolve(directory, 'config.snapshot.json'), RUN_OUTPUT_DIR: directory, POBEDA_PREPARE_ONLY: preparing ? '1' : '0', POBEDA_LOCK_ADDRESS: preparing ? '0' : process.env.POBEDA_LOCK_ADDRESS },
       });
       child.once('error', reject);
       child.on('message', (message) => { if (process.connected) process.send?.(message, () => {}); });
@@ -109,7 +111,10 @@ if (mode === 'clone') {
       process.exitCode = 1;
     }
     await portLock.close();
-    if (!cleanupBlocked) await unlink(resolve('android-avd', `.port-${serial}.lock`));
+    if (!cleanupBlocked) {
+      await unlink(reserved.path);
+      if (process.connected) process.send?.({ type: 'worker-port-released', serial }, () => {});
+    }
     if (profileLock) {
       await profileLock.close();
       if (!cleanupBlocked) await unlink(resolve('android-avd', `.profile-${name}.lock`));
