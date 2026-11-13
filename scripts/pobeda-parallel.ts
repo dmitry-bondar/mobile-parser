@@ -8,7 +8,7 @@ import { avdPath } from '../src/avd-template.js';
 import { finishProgress, updateProgress, type WorkerProgress } from '../src/worker-progress.js';
 import { runQueue, validateProfiles } from '../src/profile-jobs.js';
 
-const { positionals, values } = parseArgs({ allowPositionals: true, options: { gpu: { type: 'string' }, 'no-vulkan': { type: 'boolean' }, profiles: { type: 'boolean' }, prepare: { type: 'boolean' }, limit: { type: 'string' }, resume: { type: 'string' } } });
+const { positionals, values } = parseArgs({ allowPositionals: true, options: { gpu: { type: 'string' }, 'no-vulkan': { type: 'boolean' }, profiles: { type: 'boolean' }, prepare: { type: 'boolean' }, limit: { type: 'string' }, resume: { type: 'string' }, port: { type: 'string' } } });
 const profiles = !!values.profiles;
 if (values.prepare && !profiles) throw new Error('--prepare используется только с --profiles');
 if (values.resume && (!profiles || values.prepare)) throw new Error('--resume используется только для сбора --profiles');
@@ -19,6 +19,8 @@ const gpu = values.gpu || process.env.ANDROID_EMULATOR_GPU || 'auto';
 const noVulkan = values['no-vulkan'] || process.env.ANDROID_EMULATOR_NO_VULKAN === '1';
 graphicsArguments(gpu, noVulkan);
 const count = Number(countArgument);
+const port = Number(values.port || '5554');
+if (!Number.isInteger(port) || port < 5554 || port % 2 || port + 2 * (count - 1) > 5584) throw new Error('--port: чётный начальный порт 5554..5584; все потоки должны помещаться в диапазон');
 if (!profiles) avdPath(template);
 let configs = JSON.parse(readFileSync(process.env.POBEDA_CONFIG || 'src/extractors/pobeda/config.json', 'utf8'));
 if (!Array.isArray(configs) || !configs.length || configs.some((config) => typeof config.address !== 'string' || !Array.isArray(config.categories))) throw new Error('Некорректный конфиг адресов');
@@ -63,7 +65,7 @@ const workers: WorkerProgress[] = Array.from({ length: profiles ? configs.length
 }));
 
 function save() {
-  writeFileSync(resolve(directory, 'status.json.tmp'), JSON.stringify({ template, profiles, prepare: !!values.prepare, resumedFrom: values.resume ? resolve(values.resume) : undefined, gpu, noVulkan, workers }, null, 2));
+  writeFileSync(resolve(directory, 'status.json.tmp'), JSON.stringify({ template, profiles, prepare: !!values.prepare, resumedFrom: values.resume ? resolve(values.resume) : undefined, gpu, noVulkan, port, workers }, null, 2));
   renameSync(resolve(directory, 'status.json.tmp'), resolve(directory, 'status.json'));
 }
 
@@ -100,7 +102,7 @@ try {
     await new Promise<void>((done) => {
       const child = spawn(process.execPath, ['--import', 'tsx', 'scripts/avd.ts', values.prepare ? 'prepare' : 'run', worker.profile || template, profiles ? '1' : String(worker.worker), profiles ? '1' : String(count)], {
         stdio: ['ignore', 'pipe', 'pipe', 'ipc'], windowsHide: true, detached: process.platform === 'win32',
-        env: { ...process.env, POBEDA_CONFIG: configPath, AVD_SLOT: String(slot), POBEDA_PROFILE_JOB: profiles ? '1' : '0', POBEDA_LOCK_ADDRESS: profiles && !values.prepare ? '1' : '0', ANDROID_EMULATOR_GPU: gpu, ANDROID_EMULATOR_NO_VULKAN: noVulkan ? '1' : '0' },
+        env: { ...process.env, POBEDA_CONFIG: configPath, AVD_SLOT: String((port - 5554) / 2 + slot), POBEDA_PROFILE_JOB: profiles ? '1' : '0', POBEDA_LOCK_ADDRESS: profiles && !values.prepare ? '1' : '0', ANDROID_EMULATOR_GPU: gpu, ANDROID_EMULATOR_NO_VULKAN: noVulkan ? '1' : '0' },
       });
       let stderr = '';
       let spawnError = '';
@@ -121,7 +123,7 @@ try {
       });
       child.once('error', (error) => { spawnError = error.message; });
       child.once('close', (code) => {
-        if (existsSync(resolve('android-avd', `.port-emulator-${5554 + 2 * (slot - 1)}.lock`)) && !stopping) {
+        if (existsSync(resolve('android-avd', `.port-emulator-${port + 2 * (slot - 1)}.lock`)) && !stopping) {
           console.error('Блокировка порта не освобождена. Запуск новых заданий остановлен.');
           stop();
         }

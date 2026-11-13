@@ -11,7 +11,7 @@ import ts from 'typescript';
 import { runQueue } from '../src/profile-jobs.js';
 import { finishProgress, updateProgress } from '../src/worker-progress.js';
 
-test('blocked cleanup stops the supervisor from launching the next profiles', async () => {
+for (const port of [5554, 5558]) test(`blocked cleanup stops the supervisor on selected port ${port}`, async () => {
   const source = await readFile(new URL('../scripts/pobeda-parallel.ts', import.meta.url), 'utf8');
   const body = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText.replace(/^import .*$/gm, '');
   const execute = new (Object.getPrototypeOf(async function () {}).constructor)('deps', `const {appendFileSync,existsSync,mkdirSync,readFileSync,renameSync,writeFileSync,resolve,spawn,randomUUID,parseArgs,graphicsArguments,avdPath,finishProgress,updateProgress,runQueue,validateProfiles,process,console}=deps; ${body}`);
@@ -24,12 +24,13 @@ test('blocked cleanup stops the supervisor from launching the next profiles', as
     readFileSync: (path: string) => path.includes('config.json') ? JSON.stringify(configs) : '',
     renameSync: () => {},
     writeFileSync: (path: string, text: string) => { files.set(path, text); if (path.endsWith('status.json.tmp')) report = JSON.parse(text); },
-    resolve, randomUUID: () => 'test', parseArgs: () => ({ positionals: ['1'], values: { profiles: true } }),
+    resolve, randomUUID: () => 'test', parseArgs: () => ({ positionals: ['1'], values: { profiles: true, port: String(port) } }),
     graphicsArguments: () => [], avdPath: (name: string) => name, finishProgress, updateProgress,
     runQueue: (jobs: any[], count: number, run: any) => runQueue(jobs, count, run, 0), validateProfiles: () => {},
     process: { env: {}, platform: 'win32', execPath: 'node', stdout: { isTTY: false }, on: () => {}, removeListener: () => {}, exitCode: 0 },
     console: { log: () => {}, table: () => {}, error: () => {} },
-    spawn: () => {
+    spawn: (_: string, __: string[], options: any) => {
+      assert.equal(options.env.AVD_SLOT, String((port - 5554) / 2 + 1));
       launched++;
       const child = Object.assign(new EventEmitter(), { stdout: new EventEmitter(), stderr: new EventEmitter() });
       setImmediate(() => {
@@ -41,6 +42,7 @@ test('blocked cleanup stops the supervisor from launching the next profiles', as
     },
   });
   assert.equal(launched, 1);
+  assert.equal(report.port, port);
   assert.ok([...files.keys()].some((path) => path.endsWith('stop.requested')));
   assert.ok(report.workers.slice(1).every((worker: any) => worker.addresses[0].status === 'Не запущен'));
 });
